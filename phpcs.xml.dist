@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<ruleset name="AegisGuard Security">
+    <description>WordPress Coding Standards for AegisGuard Security.</description>
+    <file>aegisguard-security.php</file>
+    <file>uninstall.php</file>
+    <file>src</file>
+    <exclude-pattern>vendor/*</exclude-pattern>
+    <arg name="extensions" value="php"/>
+    <arg value="ps"/>
+    <rule ref="WordPress-Core"/>
+    <rule ref="WordPress-Extra"/>
+    <config name="minimum_supported_wp_version" value="6.5"/>
+</ruleset>
