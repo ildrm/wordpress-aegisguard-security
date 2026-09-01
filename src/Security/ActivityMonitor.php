@@ -31,9 +31,17 @@ final class ActivityMonitor {
 	}
 
 	public static function user_created( $user_id ) {
-		$user = get_userdata( $user_id );
+		$user  = get_userdata( $user_id );
 		$roles = $user ? implode( ',', $user->roles ) : '';
-		Logger::log( 'user.created', 'User account created.', in_array( 'administrator', $user ? $user->roles : array(), true ) ? 'high' : 'info', array( 'target_user_id' => $user_id, 'roles' => $roles ) );
+		Logger::log(
+			'user.created',
+			'User account created.',
+			in_array( 'administrator', $user ? $user->roles : array(), true ) ? 'high' : 'info',
+			array(
+				'target_user_id' => $user_id,
+				'roles'          => $roles,
+			)
+		);
 	}
 
 	public static function user_deleted( $user_id ) {
@@ -42,27 +50,68 @@ final class ActivityMonitor {
 
 	public static function user_role_changed( $user_id, $role, $old_roles ) {
 		$severity = 'administrator' === $role ? 'high' : 'medium';
-		Logger::log( 'user.role_changed', 'User role changed.', $severity, array( 'target_user_id' => $user_id, 'new_role' => $role, 'old_roles' => implode( ',', (array) $old_roles ) ) );
+		Logger::log(
+			'user.role_changed',
+			'User role changed.',
+			$severity,
+			array(
+				'target_user_id' => $user_id,
+				'new_role'       => $role,
+				'old_roles'      => implode( ',', (array) $old_roles ),
+			)
+		);
 	}
 
 	public static function plugin_activated( $plugin, $network_wide ) {
-		Logger::log( 'plugin.activated', 'Plugin activated.', 'medium', array( 'plugin' => $plugin, 'network_wide' => $network_wide ? 'yes' : 'no' ) );
+		Logger::log(
+			'plugin.activated',
+			'Plugin activated.',
+			'medium',
+			array(
+				'plugin'       => $plugin,
+				'network_wide' => $network_wide ? 'yes' : 'no',
+			)
+		);
 	}
 
 	public static function plugin_deactivated( $plugin, $network_wide ) {
 		$severity = AEGISGUARD_BASENAME === $plugin ? 'critical' : 'medium';
-		Logger::log( 'plugin.deactivated', 'Plugin deactivated.', $severity, array( 'plugin' => $plugin, 'network_wide' => $network_wide ? 'yes' : 'no' ) );
+		Logger::log(
+			'plugin.deactivated',
+			'Plugin deactivated.',
+			$severity,
+			array(
+				'plugin'       => $plugin,
+				'network_wide' => $network_wide ? 'yes' : 'no',
+			)
+		);
 	}
 
 	public static function theme_switched( $new_name, $new_theme, $old_theme ) {
-		Logger::log( 'theme.switched', 'Active theme changed.', 'medium', array( 'new_theme' => $new_name, 'old_theme' => $old_theme ? $old_theme->get( 'Name' ) : '' ) );
+		Logger::log(
+			'theme.switched',
+			'Active theme changed.',
+			'medium',
+			array(
+				'new_theme' => $new_name,
+				'old_theme' => $old_theme ? $old_theme->get( 'Name' ) : '',
+			)
+		);
 	}
 
 	public static function upgrade_completed( $upgrader, $options ) {
 		unset( $upgrader );
-		$type = isset( $options['type'] ) ? sanitize_key( $options['type'] ) : 'unknown';
+		$type   = isset( $options['type'] ) ? sanitize_key( $options['type'] ) : 'unknown';
 		$action = isset( $options['action'] ) ? sanitize_key( $options['action'] ) : 'unknown';
-		Logger::log( 'software.updated', 'WordPress software update operation completed.', 'medium', array( 'type' => $type, 'action' => $action ) );
+		Logger::log(
+			'software.updated',
+			'WordPress software update operation completed.',
+			'medium',
+			array(
+				'type'   => $type,
+				'action' => $action,
+			)
+		);
 	}
 
 	public static function option_updated( $option, $old_value, $value ) {
@@ -86,11 +135,27 @@ final class ActivityMonitor {
 	}
 
 	public static function application_password_authenticated( $user, $item ) {
-		Logger::log( 'auth.application_password', 'Application password authenticated.', 'medium', array( 'user_id' => $user->ID, 'application_uuid' => isset( $item['uuid'] ) ? $item['uuid'] : '' ) );
+		Logger::log(
+			'auth.application_password',
+			'Application password authenticated.',
+			'medium',
+			array(
+				'user_id'          => $user->ID,
+				'application_uuid' => isset( $item['uuid'] ) ? $item['uuid'] : '',
+			)
+		);
 	}
 
 	public static function woocommerce_refund( $order_id, $refund_id ) {
-		Logger::log( 'woocommerce.refund', 'WooCommerce refund created.', 'high', array( 'order_id' => $order_id, 'refund_id' => $refund_id ) );
+		Logger::log(
+			'woocommerce.refund',
+			'WooCommerce refund created.',
+			'high',
+			array(
+				'order_id'  => $order_id,
+				'refund_id' => $refund_id,
+			)
+		);
 	}
 
 	private static function skip_option( $option ) {

@@ -35,7 +35,7 @@ function aegisguard_uninstall_site() {
 	);
 
 	foreach ( $tables as $table ) {
-		$wpdb->query( 'DROP TABLE IF EXISTS `' . esc_sql( $table ) . '`' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Internal table names derived only from $wpdb->prefix.
+		$wpdb->query( 'DROP TABLE IF EXISTS `' . esc_sql( $table ) . '`' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.SchemaChange -- Opt-in uninstall cleanup of internal tables derived only from $wpdb->prefix.
 	}
 
 	foreach (
@@ -55,12 +55,22 @@ function aegisguard_uninstall_site() {
 	) {
 		delete_option( $option );
 	}
+
+	$counter_pattern = $wpdb->esc_like( 'aegisguard_mfa_counter_' ) . '%';
+	$lock_pattern    = $wpdb->esc_like( 'aegisguard_mfa_recovery_lock_' ) . '%';
+	$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Opt-in uninstall cleanup of per-user replay and mutex options.
+		$wpdb->prepare(
+			"DELETE FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s",
+			$counter_pattern,
+			$lock_pattern
+		)
+	); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- WordPress supplies the options table name; both patterns use placeholders.
 }
 
 if ( is_multisite() ) {
-	$site_ids = get_sites( array( 'fields' => 'ids' ) );
-	foreach ( $site_ids as $site_id ) {
-		switch_to_blog( (int) $site_id );
+	$aegisguard_site_ids = get_sites( array( 'fields' => 'ids' ) );
+	foreach ( $aegisguard_site_ids as $aegisguard_site_id ) {
+		switch_to_blog( (int) $aegisguard_site_id );
 		aegisguard_uninstall_site();
 		restore_current_blog();
 	}

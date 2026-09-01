@@ -5,9 +5,16 @@
     <file>uninstall.php</file>
     <file>src</file>
     <exclude-pattern>vendor/*</exclude-pattern>
+    <exclude-pattern>tests/*</exclude-pattern>
     <arg name="extensions" value="php"/>
     <arg value="ps"/>
-    <rule ref="WordPress-Core"/>
-    <rule ref="WordPress-Extra"/>
+    <rule ref="WordPress-Core">
+        <exclude name="WordPress.Files.FileName.NotHyphenatedLowercase"/>
+        <exclude name="WordPress.Files.FileName.InvalidClassFileName"/>
+    </rule>
+    <rule ref="WordPress-Extra">
+        <exclude name="WordPress.Files.FileName.NotHyphenatedLowercase"/>
+        <exclude name="WordPress.Files.FileName.InvalidClassFileName"/>
+    </rule>
     <config name="minimum_supported_wp_version" value="6.5"/>
 </ruleset>

@@ -12,8 +12,8 @@ final class OutboundMonitor {
 		add_action( 'http_api_debug', array( __CLASS__, 'observe' ), 10, 5 );
 	}
 
-	public static function observe( $response, $context, $class, $parsed_args, $url ) {
-		unset( $response, $class, $parsed_args );
+	public static function observe( $response, $context, $transport_class, $parsed_args, $url ) {
+		unset( $response, $transport_class, $parsed_args );
 		if ( 'response' !== $context || empty( $url ) ) {
 			return;
 		}

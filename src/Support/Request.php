@@ -21,7 +21,7 @@ final class Request {
 			return $remote;
 		}
 
-		$forwarded = isset( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ? wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) : '';
+		$forwarded = isset( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ? wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Each comma-delimited candidate must pass FILTER_VALIDATE_IP before use.
 		if ( ! $forwarded ) {
 			return $remote;
 		}

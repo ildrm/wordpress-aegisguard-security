@@ -9,7 +9,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class Activator {
-	const DB_VERSION = '1.0.0';
+	const DB_VERSION = '1.0.1';
 
 	public static function activate( $network_wide = false ) {
 		if ( is_multisite() && $network_wide ) {
@@ -38,31 +38,31 @@ final class Activator {
 	}
 
 	public static function install_site() {
-		self::create_tables();
-		Capabilities::grant_to_administrators();
 
+		self::create_tables();
+		self::ensure_keys();
+		Capabilities::grant_to_administrators();
 		if ( false === get_option( Settings::OPTION, false ) ) {
 			add_option( Settings::OPTION, Settings::defaults(), '', false );
 		}
 		if ( false === get_option( 'aegisguard_install_id', false ) ) {
 			add_option( 'aegisguard_install_id', wp_generate_uuid4(), '', false );
 		}
-		if ( false === get_option( 'aegisguard_quarantine_key', false ) ) {
-			add_option( 'aegisguard_quarantine_key', base64_encode( random_bytes( 32 ) ), '', false );
-		}
-		if ( false === get_option( 'aegisguard_audit_key', false ) ) {
-			add_option( 'aegisguard_audit_key', base64_encode( random_bytes( 32 ) ), '', false );
-		}
-		if ( false === get_option( 'aegisguard_mfa_key', false ) ) {
-			add_option( 'aegisguard_mfa_key', base64_encode( random_bytes( 32 ) ), '', false );
-		}
 		update_option( 'aegisguard_db_version', self::DB_VERSION, false );
-
 		if ( ! wp_next_scheduled( 'aegisguard_daily_maintenance' ) ) {
 			wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', 'aegisguard_daily_maintenance' );
 		}
 	}
 
+	private static function ensure_keys() {
+
+		foreach ( array( 'aegisguard_quarantine_key', 'aegisguard_audit_key', 'aegisguard_mfa_key' ) as $option_name ) {
+			if ( false === get_option( $option_name, false ) ) {
+				// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Binary cryptographic key serialization, not code obfuscation.
+				add_option( $option_name, base64_encode( random_bytes( 32 ) ), '', false );
+			}
+		}
+	}
 	private static function create_tables() {
 		global $wpdb;
 

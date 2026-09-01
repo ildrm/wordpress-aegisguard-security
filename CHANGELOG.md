@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.1 — 2026-09-01
+
+- Fixed activation-time audit-chain key ordering and serialized writes, verification, and retention pruning.
+- Prevented TOTP replay and concurrent recovery-code reuse.
+- Preserved IP-wide abuse counters across successful logins.
+- Hardened encoded-traversal detection, large-upload inspection, and quarantine path handling.
+- Reduced verified WordPress core and development-dependency scanner false positives.
+- Added integration regressions, reproducible tooling, packaging rules, and CI checks.
+
 ## 1.0.0 — 2026-08-31
 
 - Initial release.
