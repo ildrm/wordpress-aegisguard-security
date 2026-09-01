@@ -32,7 +32,6 @@ final class Plugin {
 		}
 		$this->booted = true;
 
-		add_action( 'plugins_loaded', array( $this, 'load_textdomain' ) );
 		add_action( 'init', array( $this, 'maybe_upgrade' ), 1 );
 		add_action( 'aegisguard_daily_maintenance', array( $this, 'maintenance' ) );
 		if ( is_multisite() ) {
@@ -51,10 +50,6 @@ final class Plugin {
 		if ( is_admin() ) {
 			Admin::register();
 		}
-	}
-
-	public function load_textdomain() {
-		load_plugin_textdomain( 'aegisguard-security', false, dirname( AEGISGUARD_BASENAME ) . '/languages' );
 	}
 
 	public function maybe_upgrade() {
@@ -77,27 +72,9 @@ final class Plugin {
 	}
 
 	public function maintenance() {
-		global $wpdb;
 		$days   = max( 1, (int) \AegisGuard\Support\Settings::get( 'event_retention_days', 30 ) );
-		$table  = $wpdb->prefix . 'aegisguard_events';
 		$cutoff = gmdate( 'Y-m-d H:i:s', time() - ( $days * DAY_IN_SECONDS ) );
-		$batch = max( 100, min( 5000, (int) \AegisGuard\Support\Settings::get( 'log_retention_cleanup_batch', 1000 ) ) );
-		$last_deleted = $wpdb->get_row( $wpdb->prepare( "SELECT id, chain_hash FROM {$table} WHERE created_at < %s ORDER BY id ASC LIMIT %d", $cutoff, $batch ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internal table name.
-		if ( $last_deleted ) {
-			$candidates = $wpdb->get_results( $wpdb->prepare( "SELECT id, chain_hash FROM {$table} WHERE created_at < %s ORDER BY id ASC LIMIT %d", $cutoff, $batch ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internal table name.
-			if ( $candidates ) {
-				$tail = end( $candidates );
-				$ids  = array_map( 'absint', wp_list_pluck( $candidates, 'id' ) );
-				$ids  = array_values( array_filter( $ids ) );
-				if ( $ids ) {
-					$placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
-					$sql = $wpdb->prepare( "DELETE FROM {$table} WHERE id IN ({$placeholders})", $ids ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Placeholders are generated internally; values are integer IDs.
-					$deleted = $wpdb->query( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Query is prepared immediately above.
-					if ( $deleted && ! empty( $tail['chain_hash'] ) ) {
-						update_option( 'aegisguard_audit_anchor', (string) $tail['chain_hash'], false );
-					}
-				}
-			}
-		}
+		$batch  = (int) \AegisGuard\Support\Settings::get( 'log_retention_cleanup_batch', 1000 );
+		Logger::prune( $cutoff, $batch );
 	}
 }

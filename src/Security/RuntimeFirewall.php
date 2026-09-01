@@ -49,22 +49,23 @@ final class RuntimeFirewall {
 	}
 
 	private static function request_sample() {
-		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_key( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET';
-		$uri    = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : '/';
-		$query  = isset( $_SERVER['QUERY_STRING'] ) ? (string) wp_unslash( $_SERVER['QUERY_STRING'] ) : '';
-		$agent  = isset( $_SERVER['HTTP_USER_AGENT'] ) ? (string) wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) : '';
+		$method       = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_key( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET';
+		$uri          = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : '/'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Bounded raw request data is canonicalized and inspected, never rendered or executed.
+		$query        = isset( $_SERVER['QUERY_STRING'] ) ? (string) wp_unslash( $_SERVER['QUERY_STRING'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitizing before inspection could erase attack signatures; data is never rendered or executed.
+		$agent        = isset( $_SERVER['HTTP_USER_AGENT'] ) ? (string) wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Bounded raw request data is canonicalized and inspected, never rendered or executed.
 		$content_type = isset( $_SERVER['CONTENT_TYPE'] ) ? strtolower( sanitize_text_field( wp_unslash( $_SERVER['CONTENT_TYPE'] ) ) ) : '';
-		$body = '';
+		$body         = '';
 		if ( in_array( $method, array( 'POST', 'PUT', 'PATCH' ), true ) && false === strpos( $content_type, 'multipart/form-data' ) ) {
 			$raw_body = file_get_contents( 'php://input', false, null, 0, 32768 ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Bounded read of the current request body for WAF inspection.
-			$body = is_string( $raw_body ) ? $raw_body : '';
+			$body     = is_string( $raw_body ) ? $raw_body : '';
 		}
 
 		return substr( $method . "\n" . $uri . "\n" . $query . "\n" . $agent . "\n" . $body, 0, 49152 );
 	}
 
 	private static function analyze( $raw ) {
-		$decoded = rawurldecode( html_entity_decode( strtolower( (string) $raw ), ENT_QUOTES, 'UTF-8' ) );
+
+		$decoded = self::canonicalize( $raw );
 		$rules   = array();
 		$score   = 0;
 		$checks  = array(
@@ -80,7 +81,7 @@ final class RuntimeFirewall {
 			'php_exec'        => array( '/\b(?:eval|assert|base64_decode|gzinflate)\s*\(/i', 4 ),
 			'sensitive_file'  => array( '#/(?:\.env(?:\.|$)|\.git/|wp-config\.php\.(?:bak|old|save)|id_rsa|database\.sql)#i', 5 ),
 			'shell_meta'      => array( '/(?:;|\|\||&&)\s*(?:curl|wget|bash|sh|nc|python|perl)\b/i', 5 ),
-			'scanner_agent'    => array( '/\b(?:sqlmap|nikto|nuclei|acunetix|nessus|wpscan)\b/i', 4 ),
+			'scanner_agent'   => array( '/\b(?:sqlmap|nikto|nuclei|acunetix|nessus|wpscan)\b/i', 4 ),
 		);
 
 		foreach ( $checks as $name => $check ) {
@@ -90,9 +91,24 @@ final class RuntimeFirewall {
 			}
 		}
 
-		return array( 'score' => $score, 'rules' => $rules );
+		return array(
+			'score' => $score,
+			'rules' => $rules,
+		);
 	}
 
+	private static function canonicalize( $raw ) {
+
+		$value = strtolower( (string) $raw );
+		for ( $pass = 0; $pass < 4; $pass++ ) {
+			$decoded = rawurldecode( html_entity_decode( $value, ENT_QUOTES, 'UTF-8' ) );
+			if ( $decoded === $value ) {
+				break;
+			}
+			$value = $decoded;
+		}
+		return str_replace( "\0", '', $value );
+	}
 	private static function is_temporarily_blocked( $ip ) {
 		return false !== get_transient( 'aegisguard_ipblock_' . hash( 'sha256', $ip ) );
 	}

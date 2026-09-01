@@ -3,7 +3,7 @@ Tags: security, firewall, malware, waf, mfa
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -73,6 +73,15 @@ No. WooCommerce-specific hooks are registered safely and simply remain unused wh
 No. AegisGuard uses a dedicated per-site MFA encryption key. Recovery codes remain available as an independent recovery mechanism.
 
 == Changelog ==
+
+= 1.0.1 =
+* Serialize audit-chain writes, verification, and retention pruning to preserve chain integrity under concurrency.
+* Create cryptographic keys before activation can emit audit events.
+* Reject TOTP replay and make recovery-code consumption atomic.
+* Keep IP-wide login-abuse counters after a successful login.
+* Strengthen encoded-traversal inspection, large-upload tail inspection, and quarantine symlink/restore safeguards.
+* Suppress process-execution heuristics only for files that match official WordPress core checksums.
+* Add WordPress integration regressions, reproducible development dependencies, and CI quality checks.
 
 = 1.0.0 =
 * Initial production-oriented local security agent.

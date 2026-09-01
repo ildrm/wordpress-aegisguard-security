@@ -1,5 +1,25 @@
 # Test Plan
 
+## Local release gates
+
+```sh
+composer install
+composer validate --strict --no-check-publish
+composer test
+node --check assets/js/admin.js
+git archive --format=zip --prefix=aegisguard-security/ --output=build/aegisguard-security.zip HEAD
+```
+
+Run the WordPress integration regressions from a disposable installation with the plugin active:
+
+```sh
+wp eval-file wp-content/plugins/aegisguard-security/tests/integration-smoke.php
+wp aegisguard scan
+wp plugin check aegisguard-security --format=strict-json
+```
+
+The integration suite covers activation state, capability grants, settings bounds, trusted-proxy parsing, MFA replay and recovery-code reuse, large polyglot uploads, quarantine/restore boundaries, audit-chain retention, login abuse counters, and REST user-enumeration protection.
+
 ## Automated/static checks required in CI
 
 1. `php -l` for every PHP file on PHP 7.4, 8.0, 8.1, 8.2, 8.3, and current supported PHP.

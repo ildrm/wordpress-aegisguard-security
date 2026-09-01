@@ -60,7 +60,13 @@ final class Admin {
 		$settings = Settings::all();
 		$scan     = get_option( 'aegisguard_last_scan_results', array() );
 		$score    = self::security_score( $settings, $scan );
-		$summary  = isset( $scan['summary'] ) && is_array( $scan['summary'] ) ? $scan['summary'] : array( 'critical' => 0, 'high' => 0, 'medium' => 0, 'low' => 0, 'total' => 0 );
+		$summary  = isset( $scan['summary'] ) && is_array( $scan['summary'] ) ? $scan['summary'] : array(
+			'critical' => 0,
+			'high'     => 0,
+			'medium'   => 0,
+			'low'      => 0,
+			'total'    => 0,
+		);
 		$lockdown = (bool) get_option( 'aegisguard_lockdown', false );
 		?>
 		<div class="wrap aegisguard-wrap">
@@ -91,6 +97,7 @@ final class Admin {
 						<p><?php esc_html_e( 'No complete security scan has been run yet. Establish a baseline before making aggressive changes.', 'aegisguard-security' ); ?></p>
 						<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=aegisguard-scanner' ) ); ?>"><?php esc_html_e( 'Run first scan', 'aegisguard-security' ); ?></a>
 					<?php elseif ( (int) $summary['critical'] > 0 ) : ?>
+						<?php /* translators: %d: number of critical security findings. */ ?>
 						<p class="ag-danger-text"><?php echo esc_html( sprintf( _n( '%d critical issue requires review.', '%d critical issues require review.', (int) $summary['critical'], 'aegisguard-security' ), (int) $summary['critical'] ) ); ?></p>
 						<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=aegisguard-scanner' ) ); ?>"><?php esc_html_e( 'Review findings', 'aegisguard-security' ); ?></a>
 					<?php else : ?>
@@ -100,6 +107,9 @@ final class Admin {
 				</section>
 			</div>
 
+			<?php
+			if ( current_user_can( Capabilities::INCIDENT ) ) :
+				?>
 			<section class="ag-card ag-section-gap">
 				<div class="ag-card-head"><div><h2><?php esc_html_e( 'Incident response', 'aegisguard-security' ); ?></h2><p><?php esc_html_e( 'Emergency lockdown restricts wp-admin and REST access to help contain an active compromise. WP-CLI remains available for recovery.', 'aegisguard-security' ); ?></p></div></div>
 				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
@@ -109,6 +119,7 @@ final class Admin {
 					<button type="submit" class="button <?php echo esc_attr( $lockdown ? '' : 'button-secondary' ); ?>"><?php echo esc_html( $lockdown ? __( 'Disable lockdown', 'aegisguard-security' ) : __( 'Enable emergency lockdown', 'aegisguard-security' ) ); ?></button>
 				</form>
 			</section>
+			<?php endif; ?>
 		</div>
 		<?php
 	}
@@ -136,7 +147,11 @@ final class Admin {
 				</div>
 				<p class="description"><?php esc_html_e( 'Large sites should begin with conservative scan limits in Settings. The scanner never executes discovered code.', 'aegisguard-security' ); ?></p>
 			</section>
-			<?php if ( ! empty( $result ) ) : self::render_scan_result( $result ); endif; ?>
+			<?php
+			if ( ! empty( $result ) ) :
+				self::render_scan_result( $result );
+endif;
+			?>
 		</div>
 		<?php
 	}
@@ -159,7 +174,10 @@ final class Admin {
 					<table class="widefat striped ag-table">
 						<thead><tr><th><?php esc_html_e( 'Captured', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Original path', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'SHA-256', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Status', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Actions', 'aegisguard-security' ); ?></th></tr></thead>
 						<tbody>
-						<?php if ( $items ) : foreach ( $items as $item ) : ?>
+						<?php
+						if ( $items ) :
+							foreach ( $items as $item ) :
+								?>
 							<tr>
 								<td><?php echo esc_html( ! empty( $item['captured_at'] ) ? $item['captured_at'] : '—' ); ?></td>
 								<td><code class="ag-path"><?php echo esc_html( ! empty( $item['original_path'] ) ? $item['original_path'] : $item['name'] ); ?></code></td>
@@ -184,7 +202,7 @@ final class Admin {
 									</div>
 								</td>
 							</tr>
-						<?php endforeach; else : ?>
+													<?php endforeach; else : ?>
 							<tr><td colspan="5"><?php esc_html_e( 'No files are currently quarantined.', 'aegisguard-security' ); ?></td></tr>
 						<?php endif; ?>
 						</tbody>
@@ -197,11 +215,11 @@ final class Admin {
 
 	public static function identity() {
 		self::require_cap( Capabilities::VIEW );
-		$user_id = get_current_user_id();
-		$user    = wp_get_current_user();
+		$user_id        = get_current_user_id();
+		$user           = wp_get_current_user();
 		$recovery_codes = array();
-		$message = '';
-		$error   = '';
+		$message        = '';
+		$error          = '';
 
 		if ( isset( $_POST['aegisguard_mfa_action'] ) ) {
 			check_admin_referer( 'aegisguard_identity' );
@@ -224,10 +242,11 @@ final class Admin {
 						$error = $enabled->get_error_message();
 					} else {
 						$recovery_codes = $enabled;
-						$message = __( 'MFA is enabled. Save the recovery codes now; they are shown only in this response.', 'aegisguard-security' );
+						$message        = __( 'MFA is enabled. Save the recovery codes now; they are shown only in this response.', 'aegisguard-security' );
 					}
 				}
 			} elseif ( 'disable' === $action ) {
+				// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Passwords must be checked byte-for-byte and are never stored or rendered.
 				$password = isset( $_POST['current_password'] ) ? (string) wp_unslash( $_POST['current_password'] ) : '';
 				if ( ! wp_check_password( $password, $user->user_pass, $user_id ) ) {
 					$error = __( 'The current password was not valid.', 'aegisguard-security' );
@@ -243,8 +262,14 @@ final class Admin {
 		?>
 		<div class="wrap aegisguard-wrap">
 			<?php self::header( __( 'Identity Security', 'aegisguard-security' ), __( 'Protect privileged WordPress access with time-based one-time passwords and one-use recovery codes.', 'aegisguard-security' ) ); ?>
-			<?php if ( $message ) : ?><div class="notice notice-success inline"><p><?php echo esc_html( $message ); ?></p></div><?php endif; ?>
-			<?php if ( $error ) : ?><div class="notice notice-error inline"><p><?php echo esc_html( $error ); ?></p></div><?php endif; ?>
+			<?php
+			if ( $message ) :
+				?>
+				<div class="notice notice-success inline"><p><?php echo esc_html( $message ); ?></p></div><?php endif; ?>
+			<?php
+			if ( $error ) :
+				?>
+				<div class="notice notice-error inline"><p><?php echo esc_html( $error ); ?></p></div><?php endif; ?>
 			<div class="ag-grid ag-grid-2">
 				<section class="ag-card">
 					<h2><?php esc_html_e( 'Your MFA status', 'aegisguard-security' ); ?></h2>
@@ -279,7 +304,7 @@ final class Admin {
 				<section class="ag-card">
 					<h2><?php esc_html_e( 'Session overview', 'aegisguard-security' ); ?></h2>
 					<?php
-					$manager = \WP_Session_Tokens::get_instance( $user_id );
+					$manager  = \WP_Session_Tokens::get_instance( $user_id );
 					$sessions = $manager->get_all();
 					?>
 					<p class="ag-big-number"><?php echo esc_html( (string) count( $sessions ) ); ?></p>
@@ -293,7 +318,11 @@ final class Admin {
 				<section class="ag-card ag-section-gap ag-recovery">
 					<h2><?php esc_html_e( 'Recovery codes — save now', 'aegisguard-security' ); ?></h2>
 					<p><?php esc_html_e( 'Each code works once. Store them offline in a password manager or another secure location.', 'aegisguard-security' ); ?></p>
-					<div class="ag-code-grid"><?php foreach ( $recovery_codes as $code ) : ?><code><?php echo esc_html( $code ); ?></code><?php endforeach; ?></div>
+					<div class="ag-code-grid">
+					<?php
+					foreach ( $recovery_codes as $code ) :
+						?>
+						<code><?php echo esc_html( $code ); ?></code><?php endforeach; ?></div>
 				</section>
 			<?php endif; ?>
 		</div>
@@ -304,20 +333,30 @@ final class Admin {
 	public static function incidents() {
 		self::require_cap( Capabilities::VIEW );
 		global $wpdb;
-		$table = $wpdb->prefix . 'aegisguard_incidents';
-		$incidents = $wpdb->get_results( "SELECT * FROM {$table} ORDER BY FIELD(status,'open','resolved'), FIELD(severity,'critical','high','medium','low'), updated_at DESC LIMIT 200" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internal table name and fixed ordering.
+		$table     = $wpdb->prefix . 'aegisguard_incidents';
+		$incidents = $wpdb->get_results( "SELECT * FROM {$table} ORDER BY FIELD(status,'open','resolved'), FIELD(severity,'critical','high','medium','low'), updated_at DESC LIMIT 200" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Read-only security-event table query; internal table name and fixed ordering.
 		?>
 		<div class="wrap aegisguard-wrap">
 			<?php self::header( __( 'Security Incidents', 'aegisguard-security' ), __( 'Correlated high-severity events are grouped into incidents so repeated attacks do not become alert noise.', 'aegisguard-security' ) ); ?>
 			<section class="ag-card">
 				<div class="ag-table-wrap"><table class="widefat striped ag-table"><thead><tr><th><?php esc_html_e( 'Status', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Severity', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Incident', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Last update', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Events', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Action', 'aegisguard-security' ); ?></th></tr></thead><tbody>
-				<?php if ( $incidents ) : foreach ( $incidents as $incident ) : $ctx = json_decode( (string) $incident->context, true ); ?>
+				<?php
+				if ( $incidents ) :
+					foreach ( $incidents as $incident ) :
+						$ctx = json_decode( (string) $incident->context, true );
+						?>
 				<tr><td><?php echo esc_html( ucfirst( $incident->status ) ); ?></td><td><span class="ag-badge ag-sev-<?php echo esc_attr( $incident->severity ); ?>"><?php echo esc_html( ucfirst( $incident->severity ) ); ?></span></td><td><strong><?php echo esc_html( $incident->title ); ?></strong><br><span class="ag-muted"><?php echo esc_html( $incident->description ); ?></span></td><td><?php echo esc_html( $incident->updated_at ); ?> UTC</td><td><?php echo esc_html( isset( $ctx['event_count'] ) ? (string) (int) $ctx['event_count'] : '1' ); ?></td><td>
-				<?php if ( 'open' === $incident->status && current_user_can( Capabilities::INCIDENT ) ) : ?>
+											<?php if ( 'open' === $incident->status && current_user_can( Capabilities::INCIDENT ) ) : ?>
 				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"><input type="hidden" name="action" value="aegisguard_resolve_incident"><input type="hidden" name="incident_id" value="<?php echo esc_attr( $incident->id ); ?>"><?php wp_nonce_field( 'aegisguard_resolve_incident_' . $incident->id ); ?><button class="button button-small" type="submit"><?php esc_html_e( 'Mark resolved', 'aegisguard-security' ); ?></button></form>
-				<?php else : ?><span class="ag-muted">—</span><?php endif; ?>
+												<?php
+				else :
+					?>
+					<span class="ag-muted">—</span><?php endif; ?>
 				</td></tr>
-				<?php endforeach; else : ?><tr><td colspan="6"><?php esc_html_e( 'No incidents have been created.', 'aegisguard-security' ); ?></td></tr><?php endif; ?>
+						<?php
+				endforeach; else :
+					?>
+					<tr><td colspan="6"><?php esc_html_e( 'No incidents have been created.', 'aegisguard-security' ); ?></td></tr><?php endif; ?>
 				</tbody></table></div>
 			</section>
 		</div>
@@ -327,18 +366,18 @@ final class Admin {
 	public static function events() {
 		self::require_cap( Capabilities::VIEW );
 		global $wpdb;
-		$table = $wpdb->prefix . 'aegisguard_events';
+		$table    = $wpdb->prefix . 'aegisguard_events';
 		$page_num = isset( $_GET['paged'] ) ? max( 1, absint( $_GET['paged'] ) ) : 1; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only pagination.
 		$severity = isset( $_GET['severity'] ) ? sanitize_key( wp_unslash( $_GET['severity'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only filter.
-		$allowed = array( 'info', 'low', 'medium', 'high', 'critical' );
-		$limit = 50;
-		$offset = ( $page_num - 1 ) * $limit;
+		$allowed  = array( 'info', 'low', 'medium', 'high', 'critical' );
+		$limit    = 50;
+		$offset   = ( $page_num - 1 ) * $limit;
 		if ( in_array( $severity, $allowed, true ) ) {
-			$events = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE severity = %s ORDER BY id DESC LIMIT %d OFFSET %d", $severity, $limit, $offset ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internal table name.
-			$total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE severity = %s", $severity ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internal table name.
+			$events = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE severity = %s ORDER BY id DESC LIMIT %d OFFSET %d", $severity, $limit, $offset ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only paginated security-event query against an internal table.
+			$total  = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE severity = %s", $severity ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only security-event count against an internal table.
 		} else {
-			$events = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} ORDER BY id DESC LIMIT %d OFFSET %d", $limit, $offset ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internal table name.
-			$total = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internal table name.
+			$events = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} ORDER BY id DESC LIMIT %d OFFSET %d", $limit, $offset ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only paginated security-event query against an internal table.
+			$total  = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only security-event count against an internal table.
 		}
 		?>
 		<div class="wrap aegisguard-wrap">
@@ -348,7 +387,10 @@ final class Admin {
 				<label for="severity"><?php esc_html_e( 'Severity', 'aegisguard-security' ); ?></label>
 				<select id="severity" name="severity">
 					<option value=""><?php esc_html_e( 'All', 'aegisguard-security' ); ?></option>
-					<?php foreach ( $allowed as $item ) : ?><option value="<?php echo esc_attr( $item ); ?>" <?php selected( $severity, $item ); ?>><?php echo esc_html( ucfirst( $item ) ); ?></option><?php endforeach; ?>
+					<?php
+					foreach ( $allowed as $item ) :
+						?>
+						<option value="<?php echo esc_attr( $item ); ?>" <?php selected( $severity, $item ); ?>><?php echo esc_html( ucfirst( $item ) ); ?></option><?php endforeach; ?>
 				</select>
 				<button class="button" type="submit"><?php esc_html_e( 'Filter', 'aegisguard-security' ); ?></button>
 			</form>
@@ -356,15 +398,31 @@ final class Admin {
 			<table class="widefat striped ag-table">
 				<thead><tr><th><?php esc_html_e( 'Time (UTC)', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Severity', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Event', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Message', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'IP', 'aegisguard-security' ); ?></th></tr></thead>
 				<tbody>
-				<?php if ( $events ) : foreach ( $events as $event ) : ?>
+				<?php
+				if ( $events ) :
+					foreach ( $events as $event ) :
+						?>
 					<tr><td><?php echo esc_html( $event->created_at ); ?></td><td><span class="ag-badge ag-sev-<?php echo esc_attr( $event->severity ); ?>"><?php echo esc_html( ucfirst( $event->severity ) ); ?></span></td><td><code><?php echo esc_html( $event->event_type ); ?></code></td><td><?php echo esc_html( $event->message ); ?></td><td><?php echo esc_html( $event->ip_address ); ?></td></tr>
-				<?php endforeach; else : ?><tr><td colspan="5"><?php esc_html_e( 'No events found.', 'aegisguard-security' ); ?></td></tr><?php endif; ?>
+									<?php
+				endforeach; else :
+					?>
+										<tr><td colspan="5"><?php esc_html_e( 'No events found.', 'aegisguard-security' ); ?></td></tr><?php endif; ?>
 				</tbody>
 			</table>
 			</div>
 			<?php
 			$total_pages = max( 1, (int) ceil( $total / $limit ) );
-			echo wp_kses_post( paginate_links( array( 'base' => add_query_arg( 'paged', '%#%' ), 'format' => '', 'current' => $page_num, 'total' => $total_pages, 'type' => 'list' ) ) );
+			echo wp_kses_post(
+				paginate_links(
+					array(
+						'base'    => add_query_arg( 'paged', '%#%' ),
+						'format'  => '',
+						'current' => $page_num,
+						'total'   => $total_pages,
+						'type'    => 'list',
+					)
+				)
+			);
 			?>
 		</div>
 		<?php
@@ -372,8 +430,8 @@ final class Admin {
 
 	public static function attack_surface() {
 		self::require_cap( Capabilities::VIEW );
-		$routes = rest_get_server()->get_routes();
-		$cron   = _get_cron_array();
+		$routes        = rest_get_server()->get_routes();
+		$cron          = _get_cron_array();
 		$public_routes = array();
 		foreach ( $routes as $route => $handlers ) {
 			$methods = array();
@@ -382,7 +440,10 @@ final class Admin {
 					$methods = array_merge( $methods, array_keys( array_filter( (array) $handler['methods'] ) ) );
 				}
 			}
-			$public_routes[] = array( 'route' => $route, 'methods' => implode( ', ', array_unique( $methods ) ) );
+			$public_routes[] = array(
+				'route'   => $route,
+				'methods' => implode( ', ', array_unique( $methods ) ),
+			);
 		}
 		?>
 		<div class="wrap aegisguard-wrap">
@@ -395,9 +456,15 @@ final class Admin {
 			<section class="ag-card ag-section-gap">
 				<h2><?php esc_html_e( 'REST API route inventory', 'aegisguard-security' ); ?></h2>
 				<div class="ag-table-wrap"><table class="widefat striped ag-table"><thead><tr><th><?php esc_html_e( 'Route', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Methods', 'aegisguard-security' ); ?></th></tr></thead><tbody>
-				<?php foreach ( array_slice( $public_routes, 0, 300 ) as $route ) : ?><tr><td><code><?php echo esc_html( $route['route'] ); ?></code></td><td><?php echo esc_html( $route['methods'] ); ?></td></tr><?php endforeach; ?>
+				<?php
+				foreach ( array_slice( $public_routes, 0, 300 ) as $route ) :
+					?>
+					<tr><td><code><?php echo esc_html( $route['route'] ); ?></code></td><td><?php echo esc_html( $route['methods'] ); ?></td></tr><?php endforeach; ?>
 				</tbody></table></div>
-				<?php if ( count( $public_routes ) > 300 ) : ?><p class="description"><?php esc_html_e( 'Only the first 300 routes are shown to keep the admin page responsive.', 'aegisguard-security' ); ?></p><?php endif; ?>
+				<?php
+				if ( count( $public_routes ) > 300 ) :
+					?>
+					<p class="description"><?php esc_html_e( 'Only the first 300 routes are shown to keep the admin page responsive.', 'aegisguard-security' ); ?></p><?php endif; ?>
 			</section>
 		</div>
 		<?php
@@ -415,7 +482,19 @@ final class Admin {
 				<section class="ag-card">
 					<h2><?php esc_html_e( 'Firewall and authentication', 'aegisguard-security' ); ?></h2>
 					<?php self::checkbox( 'waf_enabled', __( 'Enable application firewall', 'aegisguard-security' ), $s['waf_enabled'], __( 'Inspects request paths and query strings for high-confidence exploit patterns.', 'aegisguard-security' ) ); ?>
-					<?php self::select( 'waf_mode', __( 'Firewall mode', 'aegisguard-security' ), $s['waf_mode'], array( 'learning' => __( 'Learning', 'aegisguard-security' ), 'monitoring' => __( 'Monitoring', 'aegisguard-security' ), 'balanced' => __( 'Balanced', 'aegisguard-security' ), 'strict' => __( 'Strict', 'aegisguard-security' ) ) ); ?>
+					<?php
+					self::select(
+						'waf_mode',
+						__( 'Firewall mode', 'aegisguard-security' ),
+						$s['waf_mode'],
+						array(
+							'learning'   => __( 'Learning', 'aegisguard-security' ),
+							'monitoring' => __( 'Monitoring', 'aegisguard-security' ),
+							'balanced'   => __( 'Balanced', 'aegisguard-security' ),
+							'strict'     => __( 'Strict', 'aegisguard-security' ),
+						)
+					);
+					?>
 					<?php self::checkbox( 'login_rate_limit', __( 'Enable login rate limiting', 'aegisguard-security' ), $s['login_rate_limit'] ); ?>
 					<?php self::number( 'login_attempts', __( 'Attempts per identity/IP window', 'aegisguard-security' ), $s['login_attempts'], 3, 100 ); ?>
 					<?php self::number( 'login_window', __( 'Login window (seconds)', 'aegisguard-security' ), $s['login_window'], 60, DAY_IN_SECONDS ); ?>
@@ -443,7 +522,19 @@ final class Admin {
 					<h2><?php esc_html_e( 'Alerts and proxy trust', 'aegisguard-security' ); ?></h2>
 					<?php self::checkbox( 'email_alerts', __( 'Email high-priority alerts', 'aegisguard-security' ), $s['email_alerts'] ); ?>
 					<?php self::text( 'alert_email', __( 'Alert email', 'aegisguard-security' ), $s['alert_email'], 'email' ); ?>
-					<?php self::select( 'alert_threshold', __( 'Minimum alert severity', 'aegisguard-security' ), $s['alert_threshold'], array( 'low' => __( 'Low', 'aegisguard-security' ), 'medium' => __( 'Medium', 'aegisguard-security' ), 'high' => __( 'High', 'aegisguard-security' ), 'critical' => __( 'Critical', 'aegisguard-security' ) ) ); ?>
+					<?php
+					self::select(
+						'alert_threshold',
+						__( 'Minimum alert severity', 'aegisguard-security' ),
+						$s['alert_threshold'],
+						array(
+							'low'      => __( 'Low', 'aegisguard-security' ),
+							'medium'   => __( 'Medium', 'aegisguard-security' ),
+							'high'     => __( 'High', 'aegisguard-security' ),
+							'critical' => __( 'Critical', 'aegisguard-security' ),
+						)
+					);
+					?>
 					<?php self::checkbox( 'trust_proxy_headers', __( 'Trust X-Forwarded-For from explicitly listed proxies', 'aegisguard-security' ), $s['trust_proxy_headers'], __( 'Never enable this without listing the actual reverse-proxy addresses below.', 'aegisguard-security' ) ); ?>
 					<div class="ag-field"><label for="trusted_proxy_ips"><strong><?php esc_html_e( 'Trusted proxy IPs', 'aegisguard-security' ); ?></strong></label><textarea class="large-text code" rows="4" id="trusted_proxy_ips" name="trusted_proxy_ips"><?php echo esc_textarea( $s['trusted_proxy_ips'] ); ?></textarea><p class="description"><?php esc_html_e( 'One IP per line. CIDR ranges are intentionally not accepted in this version to avoid ambiguous trust.', 'aegisguard-security' ); ?></p></div>
 				</section>
@@ -461,9 +552,9 @@ final class Admin {
 	public static function save_settings() {
 		self::require_cap( Capabilities::MANAGE );
 		check_admin_referer( 'aegisguard_save_settings' );
-		$keys = array( 'waf_enabled','waf_mode','login_rate_limit','login_attempts','login_window','block_duration','disable_xmlrpc','disable_pingbacks','protect_user_enumeration','disable_file_editor','security_headers','upload_protection','database_scan','audit_logging','event_retention_days','malware_scan_max_files','file_scan_max_bytes','privacy_ip_anonymization','email_alerts','alert_email','alert_threshold','trust_proxy_headers','trusted_proxy_ips','woocommerce_monitoring','delete_data_on_uninstall' );
-		$checkboxes = array( 'waf_enabled','login_rate_limit','disable_xmlrpc','disable_pingbacks','protect_user_enumeration','disable_file_editor','security_headers','upload_protection','database_scan','audit_logging','privacy_ip_anonymization','email_alerts','trust_proxy_headers','woocommerce_monitoring','delete_data_on_uninstall' );
-		$input = Settings::all();
+		$keys       = array( 'waf_enabled', 'waf_mode', 'login_rate_limit', 'login_attempts', 'login_window', 'block_duration', 'disable_xmlrpc', 'disable_pingbacks', 'protect_user_enumeration', 'disable_file_editor', 'security_headers', 'upload_protection', 'database_scan', 'audit_logging', 'event_retention_days', 'malware_scan_max_files', 'file_scan_max_bytes', 'privacy_ip_anonymization', 'email_alerts', 'alert_email', 'alert_threshold', 'trust_proxy_headers', 'trusted_proxy_ips', 'woocommerce_monitoring', 'delete_data_on_uninstall' );
+		$checkboxes = array( 'waf_enabled', 'login_rate_limit', 'disable_xmlrpc', 'disable_pingbacks', 'protect_user_enumeration', 'disable_file_editor', 'security_headers', 'upload_protection', 'database_scan', 'audit_logging', 'privacy_ip_anonymization', 'email_alerts', 'trust_proxy_headers', 'woocommerce_monitoring', 'delete_data_on_uninstall' );
+		$input      = Settings::all();
 		foreach ( $checkboxes as $key ) {
 			$input[ $key ] = isset( $_POST[ $key ] ) ? 1 : 0;
 		}
@@ -472,6 +563,7 @@ final class Admin {
 				continue;
 			}
 			if ( isset( $_POST[ $key ] ) ) {
+				// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Settings::sanitize applies the field-specific allowlist and bounds after unslashing.
 				$input[ $key ] = is_array( $_POST[ $key ] ) ? array_map( 'sanitize_text_field', wp_unslash( $_POST[ $key ] ) ) : wp_unslash( $_POST[ $key ] );
 			}
 		}
@@ -516,7 +608,7 @@ final class Admin {
 	public static function quarantine() {
 		self::require_cap( Capabilities::INCIDENT );
 		check_admin_referer( 'aegisguard_quarantine' );
-		$path = isset( $_POST['path'] ) ? wp_normalize_path( sanitize_text_field( wp_unslash( $_POST['path'] ) ) ) : '';
+		$path   = isset( $_POST['path'] ) ? wp_normalize_path( sanitize_text_field( wp_unslash( $_POST['path'] ) ) ) : '';
 		$result = Scanner::quarantine( $path );
 		$notice = is_wp_error( $result ) ? 'quarantine_failed' : 'quarantine_success';
 		wp_safe_redirect( add_query_arg( 'ag_notice', $notice, admin_url( 'admin.php?page=aegisguard-scanner' ) ) );
@@ -552,7 +644,17 @@ final class Admin {
 		if ( $incident_id ) {
 			global $wpdb;
 			$table = $wpdb->prefix . 'aegisguard_incidents';
-			$wpdb->update( $table, array( 'status' => 'resolved', 'updated_at' => current_time( 'mysql', true ) ), array( 'id' => $incident_id ), array( '%s', '%s' ), array( '%d' ) );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Explicit authorized update to the plugin's incident table.
+			$wpdb->update(
+				$table,
+				array(
+					'status'     => 'resolved',
+					'updated_at' => current_time( 'mysql', true ),
+				),
+				array( 'id' => $incident_id ),
+				array( '%s', '%s' ),
+				array( '%d' )
+			);
 			Logger::log( 'incident.resolved', 'Security incident marked as resolved.', 'medium', array( 'incident_id' => $incident_id ) );
 		}
 		wp_safe_redirect( admin_url( 'admin.php?page=aegisguard-incidents' ) );
@@ -575,13 +677,13 @@ final class Admin {
 		if ( empty( $_GET['ag_notice'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Display-only notice.
 			return;
 		}
-		$key = sanitize_key( wp_unslash( $_GET['ag_notice'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Display-only notice.
+		$key      = sanitize_key( wp_unslash( $_GET['ag_notice'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Display-only notice.
 		$messages = array(
-			'settings_saved'     => array( 'success', __( 'Security settings saved.', 'aegisguard-security' ) ),
-			'scan_complete'      => array( 'success', __( 'Security scan completed.', 'aegisguard-security' ) ),
-			'baseline_reset'     => array( 'success', __( 'Integrity baseline cleared. The next full scan will establish a new accepted baseline.', 'aegisguard-security' ) ),
-			'quarantine_success' => array( 'success', __( 'The file was moved into protected quarantine.', 'aegisguard-security' ) ),
-			'quarantine_failed'  => array( 'error', __( 'The file could not be quarantined. Verify the path and filesystem permissions.', 'aegisguard-security' ) ),
+			'settings_saved'             => array( 'success', __( 'Security settings saved.', 'aegisguard-security' ) ),
+			'scan_complete'              => array( 'success', __( 'Security scan completed.', 'aegisguard-security' ) ),
+			'baseline_reset'             => array( 'success', __( 'Integrity baseline cleared. The next full scan will establish a new accepted baseline.', 'aegisguard-security' ) ),
+			'quarantine_success'         => array( 'success', __( 'The file was moved into protected quarantine.', 'aegisguard-security' ) ),
+			'quarantine_failed'          => array( 'error', __( 'The file could not be quarantined. Verify the path and filesystem permissions.', 'aegisguard-security' ) ),
 			'quarantine_restore_success' => array( 'success', __( 'The quarantined file was restored to its original path.', 'aegisguard-security' ) ),
 			'quarantine_restore_failed'  => array( 'error', __( 'The quarantined file could not be restored. The original location may already contain a file or may not be writable.', 'aegisguard-security' ) ),
 			'quarantine_delete_success'  => array( 'success', __( 'The quarantine record was permanently deleted.', 'aegisguard-security' ) ),
@@ -594,8 +696,8 @@ final class Admin {
 	}
 
 	private static function render_scan_result( $result ) {
-		$summary = isset( $result['summary'] ) ? $result['summary'] : array();
-		$stats   = isset( $result['stats'] ) ? $result['stats'] : array();
+		$summary  = isset( $result['summary'] ) ? $result['summary'] : array();
+		$stats    = isset( $result['stats'] ) ? $result['stats'] : array();
 		$findings = isset( $result['findings'] ) && is_array( $result['findings'] ) ? $result['findings'] : array();
 		?>
 		<div class="ag-grid ag-grid-4 ag-section-gap">
@@ -607,21 +709,30 @@ final class Admin {
 		<section class="ag-card ag-section-gap">
 			<h2><?php esc_html_e( 'Findings', 'aegisguard-security' ); ?></h2>
 			<div class="ag-table-wrap"><table class="widefat striped ag-table"><thead><tr><th><?php esc_html_e( 'Severity', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Type', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Location', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Finding', 'aegisguard-security' ); ?></th><th><?php esc_html_e( 'Action', 'aegisguard-security' ); ?></th></tr></thead><tbody>
-			<?php if ( $findings ) : foreach ( $findings as $finding ) : ?>
+			<?php
+			if ( $findings ) :
+				foreach ( $findings as $finding ) :
+					?>
 				<tr>
 					<td><span class="ag-badge ag-sev-<?php echo esc_attr( $finding['severity'] ); ?>"><?php echo esc_html( ucfirst( $finding['severity'] ) ); ?></span></td>
 					<td><code><?php echo esc_html( $finding['type'] ); ?></code></td>
 					<td><code class="ag-path"><?php echo esc_html( $finding['location'] ); ?></code></td>
 					<td><?php echo esc_html( $finding['message'] ); ?></td>
 					<td>
-					<?php if ( current_user_can( Capabilities::INCIDENT ) && self::quarantinable_finding( $finding ) ) : ?>
+									<?php if ( current_user_can( Capabilities::INCIDENT ) && self::quarantinable_finding( $finding ) ) : ?>
 						<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" data-ag-confirm="<?php echo esc_attr__( 'Quarantine this file? The site may depend on it. Use only for confirmed malicious files.', 'aegisguard-security' ); ?>">
 							<input type="hidden" name="action" value="aegisguard_quarantine"><input type="hidden" name="path" value="<?php echo esc_attr( ABSPATH . ltrim( $finding['location'], '/' ) ); ?>"><?php wp_nonce_field( 'aegisguard_quarantine' ); ?><button class="button button-small" type="submit"><?php esc_html_e( 'Quarantine', 'aegisguard-security' ); ?></button>
 						</form>
-					<?php else : ?><span class="ag-muted">—</span><?php endif; ?>
+										<?php
+					else :
+						?>
+						<span class="ag-muted">—</span><?php endif; ?>
 					</td>
 				</tr>
-			<?php endforeach; else : ?><tr><td colspan="5"><?php esc_html_e( 'No findings were recorded.', 'aegisguard-security' ); ?></td></tr><?php endif; ?>
+					<?php
+			endforeach; else :
+				?>
+				<tr><td colspan="5"><?php esc_html_e( 'No findings were recorded.', 'aegisguard-security' ); ?></td></tr><?php endif; ?>
 			</tbody></table></div>
 		</section>
 		<?php
@@ -636,7 +747,17 @@ final class Admin {
 
 	private static function security_score( $settings, $scan ) {
 		$score = 100;
-		foreach ( array( 'waf_enabled' => 12, 'login_rate_limit' => 8, 'upload_protection' => 8, 'security_headers' => 6, 'audit_logging' => 8, 'database_scan' => 5, 'disable_pingbacks' => 3, 'protect_user_enumeration' => 4, 'disable_file_editor' => 4 ) as $key => $penalty ) {
+		foreach ( array(
+			'waf_enabled'              => 12,
+			'login_rate_limit'         => 8,
+			'upload_protection'        => 8,
+			'security_headers'         => 6,
+			'audit_logging'            => 8,
+			'database_scan'            => 5,
+			'disable_pingbacks'        => 3,
+			'protect_user_enumeration' => 4,
+			'disable_file_editor'      => 4,
+		) as $key => $penalty ) {
 			if ( empty( $settings[ $key ] ) ) {
 				$score -= $penalty;
 			}

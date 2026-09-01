@@ -42,7 +42,7 @@ final class ScannerCliCommand {
 
 	/** Disable the local application firewall. */
 	public function firewall_disable() {
-		$settings = \AegisGuard\Support\Settings::all();
+		$settings                = \AegisGuard\Support\Settings::all();
 		$settings['waf_enabled'] = false;
 		update_option( \AegisGuard\Support\Settings::OPTION, $settings, false );
 		\WP_CLI::success( 'Application firewall disabled.' );
@@ -50,7 +50,7 @@ final class ScannerCliCommand {
 
 	/** Enable the local application firewall. */
 	public function firewall_enable() {
-		$settings = \AegisGuard\Support\Settings::all();
+		$settings                = \AegisGuard\Support\Settings::all();
 		$settings['waf_enabled'] = true;
 		update_option( \AegisGuard\Support\Settings::OPTION, $settings, false );
 		\WP_CLI::success( 'Application firewall enabled.' );
@@ -81,7 +81,7 @@ final class ScannerCliCommand {
 	 */
 	public function mfa_disable( $args ) {
 		$identity = isset( $args[0] ) ? (string) $args[0] : '';
-		$user = ctype_digit( $identity ) ? get_user_by( 'id', (int) $identity ) : get_user_by( 'login', $identity );
+		$user     = ctype_digit( $identity ) ? get_user_by( 'id', (int) $identity ) : get_user_by( 'login', $identity );
 		if ( ! $user && is_email( $identity ) ) {
 			$user = get_user_by( 'email', $identity );
 		}
@@ -91,5 +91,4 @@ final class ScannerCliCommand {
 		Mfa::disable_for_user( $user->ID );
 		\WP_CLI::success( 'MFA disabled for user ' . $user->user_login . '.' );
 	}
-
 }

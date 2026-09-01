@@ -6,7 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class IncidentManager {
-	public static function observe( $event_id, $type, $message, $severity, $context = array() ) {
+	public static function observe( $event_id, $type, $message, $severity ) {
 		if ( ! in_array( $severity, array( 'high', 'critical' ), true ) ) {
 			return;
 		}
@@ -17,19 +17,24 @@ final class IncidentManager {
 		global $wpdb;
 		$table       = $wpdb->prefix . 'aegisguard_incidents';
 		$fingerprint = hash( 'sha256', preg_replace( '/[^a-z0-9._-]/', '', strtolower( (string) $type ) ) . '|' . sanitize_text_field( $message ) );
-		$existing    = $wpdb->get_row( $wpdb->prepare( "SELECT id, context FROM {$table} WHERE fingerprint = %s AND status = 'open' ORDER BY id DESC LIMIT 1", $fingerprint ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Internal table name.
+		$existing    = $wpdb->get_row( $wpdb->prepare( "SELECT id, context FROM {$table} WHERE fingerprint = %s AND status = 'open' ORDER BY id DESC LIMIT 1", $fingerprint ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Incident correlation requires a current read from the internal table.
 		$now         = current_time( 'mysql', true );
 
 		if ( $existing ) {
 			$old_context = json_decode( (string) $existing->context, true );
 			$old_context = is_array( $old_context ) ? $old_context : array();
 			$count       = isset( $old_context['event_count'] ) ? (int) $old_context['event_count'] + 1 : 2;
-			$wpdb->update(
+			$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Updates the plugin's current incident correlation record.
 				$table,
 				array(
 					'updated_at' => $now,
 					'severity'   => $severity,
-					'context'    => wp_json_encode( array( 'event_count' => $count, 'latest_event_id' => (int) $event_id ) ),
+					'context'    => wp_json_encode(
+						array(
+							'event_count'     => $count,
+							'latest_event_id' => (int) $event_id,
+						)
+					),
 				),
 				array( 'id' => (int) $existing->id ),
 				array( '%s', '%s', '%s' ),
@@ -38,7 +43,7 @@ final class IncidentManager {
 			return;
 		}
 
-		$wpdb->insert(
+		$wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Inserts a new plugin incident record.
 			$table,
 			array(
 				'created_at'  => $now,
@@ -48,7 +53,12 @@ final class IncidentManager {
 				'title'       => sanitize_text_field( self::title_for_type( $type ) ),
 				'description' => sanitize_text_field( $message ),
 				'fingerprint' => $fingerprint,
-				'context'     => wp_json_encode( array( 'event_count' => 1, 'latest_event_id' => (int) $event_id ) ),
+				'context'     => wp_json_encode(
+					array(
+						'event_count'     => 1,
+						'latest_event_id' => (int) $event_id,
+					)
+				),
 			),
 			array( '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' )
 		);
@@ -58,9 +68,9 @@ final class IncidentManager {
 		$labels = array(
 			'security.waf_block'          => __( 'Firewall blocked a hostile request', 'aegisguard-security' ),
 			'security.malware_candidate'  => __( 'Malware candidate detected', 'aegisguard-security' ),
-			'security.upload_polyglot'     => __( 'Executable upload payload detected', 'aegisguard-security' ),
+			'security.upload_polyglot'    => __( 'Executable upload payload detected', 'aegisguard-security' ),
 			'security.login_rate_limited' => __( 'Login attack rate-limited', 'aegisguard-security' ),
-			'security.mfa_failed'          => __( 'MFA challenge failures detected', 'aegisguard-security' ),
+			'security.mfa_failed'         => __( 'MFA challenge failures detected', 'aegisguard-security' ),
 		);
 		return isset( $labels[ $type ] ) ? $labels[ $type ] : ucwords( str_replace( array( '.', '_' ), ' ', (string) $type ) );
 	}

@@ -14,7 +14,12 @@
   },
   "scripts": {
     "lint": "phpcs --standard=phpcs.xml.dist .",
-    "compat": "phpcs --standard=PHPCompatibilityWP --extensions=php --runtime-set testVersion 7.4- ."
+    "compat": "phpcs --standard=PHPCompatibilityWP --extensions=php --runtime-set testVersion 7.4- --ignore=vendor/* .",
+    "test": [
+      "@lint",
+      "@compat",
+      "@php tests/pure-smoke.php"
+    ]
   },
   "config": {
     "allow-plugins": {

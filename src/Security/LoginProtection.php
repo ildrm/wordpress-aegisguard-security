@@ -44,22 +44,31 @@ final class LoginProtection {
 		if ( ! Settings::get( 'login_rate_limit', true ) || empty( $username ) ) {
 			return $user;
 		}
-		$key      = self::key( $username );
-		$ip_key   = self::ip_key();
-		$data     = get_transient( $key );
-		$ip_data  = get_transient( $ip_key );
-		$limit    = (int) Settings::get( 'login_attempts', 8 );
-		$ip_limit = max( 20, $limit * 4 );
+		$key              = self::key( $username );
+		$ip_key           = self::ip_key();
+		$data             = get_transient( $key );
+		$ip_data          = get_transient( $ip_key );
+		$limit            = (int) Settings::get( 'login_attempts', 8 );
+		$ip_limit         = max( 20, $limit * 4 );
 		$identity_limited = is_array( $data ) && ! empty( $data['count'] ) && (int) $data['count'] >= $limit;
 		$ip_limited       = is_array( $ip_data ) && ! empty( $ip_data['count'] ) && (int) $ip_data['count'] >= $ip_limit;
 		if ( $identity_limited || $ip_limited ) {
-			Logger::log( 'security.login_rate_limited', 'Login attempt rate-limited.', 'high', array( 'username_hash' => hash( 'sha256', strtolower( $username ) ), 'scope' => $ip_limited ? 'ip' : 'identity_ip' ) );
+			Logger::log(
+				'security.login_rate_limited',
+				'Login attempt rate-limited.',
+				'high',
+				array(
+					'username_hash' => hash( 'sha256', strtolower( $username ) ),
+					'scope'         => $ip_limited ? 'ip' : 'identity_ip',
+				)
+			);
 			return new \WP_Error( 'aegisguard_rate_limited', __( 'Too many login attempts. Please try again later.', 'aegisguard-security' ) );
 		}
 		return $user;
 	}
 
 	public static function record_failure( $username, $error = null ) {
+		unset( $error );
 		if ( ! Settings::get( 'login_rate_limit', true ) ) {
 			return;
 		}
@@ -69,8 +78,8 @@ final class LoginProtection {
 		$ip_data  = get_transient( $ip_key );
 		$count    = is_array( $data ) && isset( $data['count'] ) ? (int) $data['count'] : 0;
 		$ip_count = is_array( $ip_data ) && isset( $ip_data['count'] ) ? (int) $ip_data['count'] : 0;
-		$count++;
-		$ip_count++;
+		++$count;
+		++$ip_count;
 		$window = (int) Settings::get( 'login_window', 900 );
 		set_transient( $key, array( 'count' => $count ), $window );
 		set_transient( $ip_key, array( 'count' => $ip_count ), $window );
@@ -86,18 +95,17 @@ final class LoginProtection {
 	}
 
 	public static function record_success( $user_login, $user ) {
+
 		delete_transient( self::key( $user_login ) );
-		delete_transient( self::ip_key() );
 		Logger::log( 'auth.login_success', 'User logged in.', 'info', array( 'user_id' => $user->ID ) );
 	}
-
 	public static function generic_login_errors( $errors, $redirect_to ) {
 		unset( $redirect_to );
 		if ( ! Settings::get( 'protect_user_enumeration', true ) || ! ( $errors instanceof \WP_Error ) ) {
 			return $errors;
 		}
 		$credential_codes = array( 'invalid_username', 'invalid_email', 'incorrect_password' );
-		$replace = false;
+		$replace          = false;
 		foreach ( $credential_codes as $code ) {
 			if ( $errors->get_error_message( $code ) ) {
 				$errors->remove( $code );
