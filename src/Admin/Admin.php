@@ -135,7 +135,7 @@ final class Admin {
 					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 						<input type="hidden" name="action" value="aegisguard_run_scan">
 						<?php wp_nonce_field( 'aegisguard_run_scan' ); ?>
-						<button class="button button-primary button-hero" type="submit"><?php esc_html_e( 'Run full security scan', 'aegisguard-security' ); ?></button>
+						<button class="button button-primary button-hero" type="submit"><?php echo esc_html( empty( $result['pending'] ) ? __( 'Run full security scan', 'aegisguard-security' ) : __( 'Continue security scan', 'aegisguard-security' ) ); ?></button>
 					</form>
 					<?php if ( get_option( 'aegisguard_integrity_initialized', false ) && current_user_can( Capabilities::INCIDENT ) ) : ?>
 					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" data-ag-confirm="<?php echo esc_attr__( 'Rebuild the accepted integrity baseline? Do this only after you have verified current file changes are legitimate.', 'aegisguard-security' ); ?>">
@@ -273,6 +273,7 @@ endif;
 			<div class="ag-grid ag-grid-2">
 				<section class="ag-card">
 					<h2><?php esc_html_e( 'Your MFA status', 'aegisguard-security' ); ?></h2>
+					<p class="description"><?php esc_html_e( 'MFA applies to sign-ins through the standard WordPress login page. Use separate controls for REST, XML-RPC, command-line access, and custom sign-in pages.', 'aegisguard-security' ); ?></p>
 					<p><span class="ag-badge <?php echo esc_attr( $enabled ? 'ag-badge-good' : 'ag-badge-warn' ); ?>"><?php echo esc_html( $enabled ? __( 'Enabled', 'aegisguard-security' ) : __( 'Not enabled', 'aegisguard-security' ) ); ?></span></p>
 					<?php if ( ! $enabled && ! $pending ) : ?>
 						<form method="post">
@@ -576,8 +577,14 @@ endif;
 	public static function run_scan() {
 		self::require_cap( Capabilities::SCAN );
 		check_admin_referer( 'aegisguard_run_scan' );
-		Scanner::run_full_scan();
-		wp_safe_redirect( add_query_arg( 'ag_notice', 'scan_complete', admin_url( 'admin.php?page=aegisguard-scanner' ) ) );
+		$result = Scanner::run_full_scan();
+		$notice = 'scan_complete';
+		if ( is_wp_error( $result ) ) {
+			$notice = 'scan_failed';
+		} elseif ( ! empty( $result['pending'] ) ) {
+			$notice = 'scan_pending';
+		}
+		wp_safe_redirect( add_query_arg( 'ag_notice', $notice, admin_url( 'admin.php?page=aegisguard-scanner' ) ) );
 		exit;
 	}
 
@@ -585,8 +592,8 @@ endif;
 	public static function reset_baseline() {
 		self::require_cap( Capabilities::INCIDENT );
 		check_admin_referer( 'aegisguard_reset_baseline' );
-		Scanner::reset_integrity_baseline();
-		wp_safe_redirect( add_query_arg( 'ag_notice', 'baseline_reset', admin_url( 'admin.php?page=aegisguard-scanner' ) ) );
+		$notice = Scanner::reset_integrity_baseline() ? 'baseline_reset' : 'baseline_reset_failed';
+		wp_safe_redirect( add_query_arg( 'ag_notice', $notice, admin_url( 'admin.php?page=aegisguard-scanner' ) ) );
 		exit;
 	}
 
@@ -674,6 +681,9 @@ endif;
 	}
 
 	public static function admin_notices() {
+		if ( current_user_can( Capabilities::MANAGE ) && version_compare( get_option( 'aegisguard_db_version', '0' ), \AegisGuard\Core\Activator::DB_VERSION, '<' ) ) {
+			echo '<div class="notice notice-error"><p>' . esc_html__( 'AegisGuard is waiting for its database migration to finish. Check database permissions and verify that the required tables and indexes can be created.', 'aegisguard-security' ) . '</p></div>';
+		}
 		if ( empty( $_GET['ag_notice'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Display-only notice.
 			return;
 		}
@@ -681,7 +691,10 @@ endif;
 		$messages = array(
 			'settings_saved'             => array( 'success', __( 'Security settings saved.', 'aegisguard-security' ) ),
 			'scan_complete'              => array( 'success', __( 'Security scan completed.', 'aegisguard-security' ) ),
+			'scan_pending'               => array( 'info', __( 'Scan progress saved. Continue to check the remaining entries.', 'aegisguard-security' ) ),
+			'scan_failed'                => array( 'error', __( 'The scan could not finish this batch. Try again after checking database availability.', 'aegisguard-security' ) ),
 			'baseline_reset'             => array( 'success', __( 'Integrity baseline cleared. The next full scan will establish a new accepted baseline.', 'aegisguard-security' ) ),
+			'baseline_reset_failed'      => array( 'error', __( 'The integrity baseline could not be cleared. Wait for any active scan to finish and try again.', 'aegisguard-security' ) ),
 			'quarantine_success'         => array( 'success', __( 'The file was moved into protected quarantine.', 'aegisguard-security' ) ),
 			'quarantine_failed'          => array( 'error', __( 'The file could not be quarantined. Verify the path and filesystem permissions.', 'aegisguard-security' ) ),
 			'quarantine_restore_success' => array( 'success', __( 'The quarantined file was restored to its original path.', 'aegisguard-security' ) ),
@@ -700,6 +713,12 @@ endif;
 		$stats    = isset( $result['stats'] ) ? $result['stats'] : array();
 		$findings = isset( $result['findings'] ) && is_array( $result['findings'] ) ? $result['findings'] : array();
 		?>
+		<?php if ( ! empty( $stats['files_skipped'] ) || ! empty( $stats['file_errors'] ) ) : ?>
+			<p class="description"><?php echo esc_html( sprintf( /* translators: 1: oversized entries, 2: unreadable entries. */ __( 'Unscanned filesystem entries: %1$d over the byte limit, %2$d read or storage errors.', 'aegisguard-security' ), (int) $stats['files_skipped'], (int) $stats['file_errors'] ) ); ?></p>
+		<?php endif; ?>
+		<?php if ( isset( $summary['total'] ) && $summary['total'] > count( $findings ) ) : ?>
+			<p class="description"><?php echo esc_html( sprintf( /* translators: 1: listed findings, 2: total findings. */ __( 'Showing %1$d of %2$d findings, highest severity first.', 'aegisguard-security' ), count( $findings ), (int) $summary['total'] ) ); ?></p>
+		<?php endif; ?>
 		<div class="ag-grid ag-grid-4 ag-section-gap">
 			<?php self::metric( __( 'Critical', 'aegisguard-security' ), isset( $summary['critical'] ) ? (int) $summary['critical'] : 0, ! empty( $summary['critical'] ) ? 'danger' : 'good' ); ?>
 			<?php self::metric( __( 'High', 'aegisguard-security' ), isset( $summary['high'] ) ? (int) $summary['high'] : 0, ! empty( $summary['high'] ) ? 'warn' : 'good' ); ?>

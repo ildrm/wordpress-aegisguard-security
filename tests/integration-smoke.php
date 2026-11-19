@@ -6,6 +6,7 @@
  * wp eval-file wp-content/plugins/aegisguard-security/tests/integration-smoke.php
  */
 
+use AegisGuard\Core\Activator;
 use AegisGuard\Core\Logger;
 use AegisGuard\Security\Hardening;
 use AegisGuard\Security\LoginProtection;
@@ -38,6 +39,7 @@ $required_tables = array(
 	$wpdb->prefix . 'aegisguard_events',
 	$wpdb->prefix . 'aegisguard_incidents',
 	$wpdb->prefix . 'aegisguard_integrity',
+	$wpdb->prefix . 'aegisguard_login_limits',
 );
 foreach ( $required_tables as $table ) {
 	$found = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) );
@@ -67,6 +69,27 @@ aegisguard_test_same( 'balanced', $sanitized['waf_mode'], 'Unknown WAF modes mus
 
 $original_settings = get_option( Settings::OPTION, array() );
 $original_server   = $_SERVER;
+$defaults          = Settings::defaults();
+foreach ( array( 'waf_enabled', 'login_rate_limit', 'upload_protection', 'audit_logging', 'email_alerts', 'database_scan', 'woocommerce_monitoring' ) as $key ) {
+	aegisguard_test_same( false, $defaults[ $key ], 'Potentially disruptive features must be opt-in.' );
+}
+aegisguard_test_assert( $defaults['privacy_ip_anonymization'] && $defaults['security_headers'], 'Privacy and baseline hardening must default on.' );
+
+$limits_table = $wpdb->prefix . 'aegisguard_login_limits';
+$wpdb->query( $wpdb->prepare( 'ALTER TABLE %i DROP INDEX expires_at', $limits_table ) );
+update_option( 'aegisguard_db_version', '1.0.1', false );
+$suppress_alter = static function ( $sql ) use ( $limits_table ) {
+	return false !== stripos( $sql, 'ALTER TABLE ' . $limits_table ) ? 'SELECT 1' : $sql;
+};
+add_filter( 'query', $suppress_alter );
+try {
+	aegisguard_test_same( false, Activator::install_site(), 'Migration must fail verification if a required index cannot be added.' );
+	aegisguard_test_same( '1.0.1', get_option( 'aegisguard_db_version' ), 'A failed migration must retain the previous schema version.' );
+} finally {
+	remove_filter( 'query', $suppress_alter );
+	aegisguard_test_assert( Activator::install_site(), 'A migration retry must restore the index.' );
+}
+
 $settings          = Settings::all();
 $settings['trust_proxy_headers'] = true;
 $settings['trusted_proxy_ips']   = "10.0.0.2\n10.0.0.3";
@@ -158,6 +181,9 @@ if ( function_exists( 'symlink' ) ) {
 	unlink( $symlink_target );
 }
 
+$settings = Settings::all();
+$settings['audit_logging'] = true;
+update_option( Settings::OPTION, $settings, false );
 Logger::log( 'test.integration_one', 'Integration chain event one.' );
 Logger::log( 'test.integration_two', 'Integration chain event two.' );
 $chain = Logger::verify_chain();
@@ -171,19 +197,63 @@ aegisguard_test_assert( ! empty( $chain['valid'] ) && $chain['checked'] >= 1, 'T
 
 $settings = Settings::all();
 $settings['login_rate_limit'] = true;
+$settings['login_attempts'] = 3;
 update_option( Settings::OPTION, $settings, false );
 $_SERVER['REMOTE_ADDR'] = '192.0.2.55';
-LoginProtection::record_failure( 'first@example.test' );
+$admin = get_user_by( 'login', 'audit_admin' );
+$login = $admin->user_email;
+$key_method = new ReflectionMethod( LoginProtection::class, 'key' );
+$key_method->setAccessible( true );
+$identity_key = $key_method->invoke( null, $login );
 $ip_key_method = new ReflectionMethod( LoginProtection::class, 'ip_key' );
 $ip_key_method->setAccessible( true );
 $ip_key        = $ip_key_method->invoke( null );
-$before        = get_transient( $ip_key );
-LoginProtection::record_success( 'audit_admin', get_user_by( 'login', 'audit_admin' ) );
-$after = get_transient( $ip_key );
-aegisguard_test_assert( is_array( $before ) && is_array( $after ) && $before['count'] === $after['count'], 'A successful login must not clear the IP-wide abuse counter.' );
-delete_transient( $ip_key );
+$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE bucket IN (%s, %s)', $limits_table, $ip_key, $identity_key ) );
+LoginProtection::record_failure( $login );
+$expiry = $wpdb->get_var( $wpdb->prepare( 'SELECT expires_at FROM %i WHERE bucket = %s', $limits_table, $identity_key ) );
+LoginProtection::record_failure( $login );
+LoginProtection::record_failure( $login );
+$limited = LoginProtection::rate_limit_authentication( $admin, $login, '' );
+aegisguard_test_assert( is_wp_error( $limited ) && 'aegisguard_rate_limited' === $limited->get_error_code(), 'The configured number of failures must trigger the identity cap.' );
+LoginProtection::record_failure( $login, $limited );
+aegisguard_test_same( $expiry, $wpdb->get_var( $wpdb->prepare( 'SELECT expires_at FROM %i WHERE bucket = %s', $limits_table, $identity_key ) ), 'Further failures must not extend the original window.' );
+LoginProtection::record_success( 'audit_admin', $admin );
+aegisguard_test_same( '3', (string) $wpdb->get_var( $wpdb->prepare( 'SELECT failures FROM %i WHERE bucket = %s', $limits_table, $ip_key ) ), 'A successful login must not clear the IP-wide abuse counter.' );
+aegisguard_test_same( $admin, LoginProtection::rate_limit_authentication( $admin, $login, '' ), 'A successful login must clear the email identity bucket.' );
+$wpdb->query( $wpdb->prepare( 'UPDATE %i SET expires_at = 0 WHERE bucket = %s', $limits_table, $ip_key ) );
+LoginProtection::record_failure( $login );
+aegisguard_test_same( '1', (string) $wpdb->get_var( $wpdb->prepare( 'SELECT failures FROM %i WHERE bucket = %s', $limits_table, $ip_key ) ), 'An expired bucket starts a new window at one.' );
+$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE bucket IN (%s, %s)', $limits_table, $ip_key, $identity_key ) );
 $_SERVER = $original_server;
 update_option( Settings::OPTION, $original_settings, false );
+
+$settings = Settings::all();
+$settings['database_scan'] = true;
+$settings['malware_scan_max_files'] = 500;
+update_option( Settings::OPTION, $settings, false );
+$old_scan = get_option( 'aegisguard_last_scan_results', false );
+delete_option( 'aegisguard_last_scan_results' );
+$checksum_fixture = static function () { return new WP_Error( 'offline_fixture' ); };
+add_filter( 'pre_http_request', $checksum_fixture );
+try {
+	$result = Scanner::run_full_scan();
+	aegisguard_test_assert( is_array( $result ) && ! empty( $result['pending']['files'] ), 'A large scan must persist its continuation cursor.' );
+	$previously_scanned = $result['stats']['files_scanned'];
+	for ( $pass = 0; ! empty( $result['pending'] ) && $pass < 20; ++$pass ) {
+		$result = Scanner::run_full_scan();
+		aegisguard_test_assert( is_array( $result ), 'Each resumed scan must produce a result.' );
+	}
+	aegisguard_test_assert( empty( $result['pending'] ) && $result['stats']['files_scanned'] > $previously_scanned, 'A resumed scan must complete and include later files.' );
+	aegisguard_test_assert( $result['stats']['database_rows_scanned'] > 0, 'The database scan must count rows inspected.' );
+} finally {
+	remove_filter( 'pre_http_request', $checksum_fixture );
+	if ( false === $old_scan ) {
+		delete_option( 'aegisguard_last_scan_results' );
+	} else {
+		update_option( 'aegisguard_last_scan_results', $old_scan, false );
+	}
+	update_option( Settings::OPTION, $original_settings, false );
+}
 
 wp_set_current_user( 0 );
 $request = new WP_REST_Request( 'GET', '/wp/v2/users' );

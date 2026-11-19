@@ -20,64 +20,118 @@ final class Scanner {
 	}
 
 	public static function run_full_scan() {
+		if ( ! self::lock() ) {
+			return new \WP_Error( 'aegisguard_scan_locked', __( 'The scanner is busy or the database lock is unavailable. Try again shortly.', 'aegisguard-security' ) );
+		}
+		try {
+			return self::run_scan_batch();
+		} finally {
+			self::unlock();
+		}
+	}
+
+	private static function run_scan_batch() {
 		$started  = microtime( true );
 		$findings = array();
-		$stats    = array(
-			'files_scanned'         => 0,
-			'database_rows_scanned' => 0,
-			'core_files_checked'    => 0,
-		);
-
-		$file_result            = self::scan_files();
-		$findings               = array_merge( $findings, $file_result['findings'] );
-		$stats['files_scanned'] = $file_result['scanned'];
-
-		$core_result                 = self::verify_core_integrity();
-		$findings                    = array_merge( $findings, $core_result['findings'] );
-		$stats['core_files_checked'] = $core_result['checked'];
-
-		if ( Settings::get( 'database_scan', true ) ) {
-			$db_result                      = self::scan_database();
-			$findings                       = array_merge( $findings, $db_result['findings'] );
-			$stats['database_rows_scanned'] = $db_result['scanned'];
+		$result   = get_option( 'aegisguard_last_scan_results', array() );
+		if ( empty( $result['pending'] ) ) {
+			$result                                = array(
+				'started_at' => gmdate( 'c' ),
+				'duration'   => 0,
+				'stats'      => array(
+					'files_scanned'         => 0,
+					'files_skipped'         => 0,
+					'file_errors'           => 0,
+					'database_rows_scanned' => 0,
+					'core_files_checked'    => 0,
+				),
+				'findings'   => array(),
+				'summary'    => self::summarize( array() ),
+				'pending'    => array(
+					'files'    => array(),
+					'baseline' => get_option( 'aegisguard_integrity_initialized', false ) ? 0 : null,
+					'database' => Settings::get( 'database_scan' ) ? array() : null,
+				),
+			);
+			$core_result                           = self::verify_core_integrity();
+			$result['stats']['core_files_checked'] = $core_result['checked'];
+			$findings                              = array_merge(
+				$core_result['findings'],
+				self::scan_configuration(),
+				self::scan_update_posture(),
+				self::scan_sensitive_files(),
+				self::scan_privileged_users(),
+				self::scan_scheduled_tasks()
+			);
+			$audit_check                           = Logger::verify_chain( 2000 );
+			if ( empty( $audit_check['valid'] ) ) {
+				$findings[] = self::finding( 'critical', 'audit_chain_invalid', 'event:' . (int) $audit_check['broken_event_id'], 'The local audit-event hash chain could not be verified. Investigate possible log tampering or key loss.' );
+			}
 		}
-
-		$findings    = array_merge(
-			$findings,
-			self::scan_configuration(),
-			self::scan_update_posture(),
-			self::scan_sensitive_files(),
-			self::scan_privileged_users(),
-			self::scan_scheduled_tasks()
-		);
-		$audit_check = Logger::verify_chain( 2000 );
-		if ( empty( $audit_check['valid'] ) ) {
-			$findings[] = self::finding( 'critical', 'audit_chain_invalid', 'event:' . (int) $audit_check['broken_event_id'], 'The local audit-event hash chain could not be verified. Investigate possible log tampering or key loss.' );
+		$pending = $result['pending'];
+		if ( isset( $pending['files'] ) ) {
+			$batch                             = self::scan_files( $pending['files'] );
+			$pending['files']                  = $batch['cursor'];
+			$result['stats']['files_scanned'] += $batch['scanned'];
+			$result['stats']['files_skipped'] += $batch['skipped'];
+			$result['stats']['file_errors']   += $batch['errors'];
+			$findings                          = array_merge( $findings, $batch['findings'] );
 		}
+		if ( ! isset( $pending['files'] ) && isset( $pending['baseline'] ) ) {
+			$batch = self::missing_baseline_files( $pending['baseline'] );
+			if ( is_wp_error( $batch ) ) {
+				return $batch;
+			}
+			$pending['baseline'] = $batch['cursor'];
+			$findings            = array_merge( $findings, $batch['findings'] );
+		}
+		if ( isset( $pending['database'] ) && Settings::get( 'database_scan' ) ) {
+			$batch = self::scan_database( $pending['database'] );
+			if ( is_wp_error( $batch ) ) {
+				return $batch;
+			}
+			$pending['database']                       = $batch['cursor'];
+			$result['stats']['database_rows_scanned'] += $batch['scanned'];
+			$findings                                  = array_merge( $findings, $batch['findings'] );
+		} else {
+			$pending['database'] = null;
+		}
+		foreach ( self::summarize( $findings ) as $severity => $count ) {
+			$result['summary'][ $severity ] += $count;
+		}
+		$findings = array_merge( $result['findings'], $findings );
 		usort( $findings, array( __CLASS__, 'sort_findings' ) );
-
-		$result = array(
-			'started_at' => gmdate( 'c' ),
-			'duration'   => round( microtime( true ) - $started, 3 ),
-			'stats'      => $stats,
-			'findings'   => array_slice( $findings, 0, 1000 ),
-			'summary'    => self::summarize( $findings ),
+		$result['findings']  = array_slice( $findings, 0, 1000 );
+		$result['duration'] += round( microtime( true ) - $started, 3 );
+		$result['pending']   = array_filter(
+			$pending,
+			static function ( $cursor ) {
+				return null !== $cursor;
+			}
 		);
-		update_option( 'aegisguard_last_scan', current_time( 'mysql', true ), false );
-		update_option( 'aegisguard_last_scan_results', $result, false );
-		Logger::log( 'security.scan_completed', 'Security scan completed.', $result['summary']['critical'] > 0 ? 'critical' : ( $result['summary']['high'] > 0 ? 'high' : 'info' ), $result['summary'] );
+		if ( ! update_option( 'aegisguard_last_scan_results', $result, false ) && get_option( 'aegisguard_last_scan_results' ) !== $result ) {
+			return new \WP_Error( 'aegisguard_scan_save_failed', __( 'The scanner could not save its progress. Try again after checking database permissions.', 'aegisguard-security' ) );
+		}
+		if ( empty( $result['pending'] ) ) {
+			if ( $result['stats']['files_scanned'] > 0 && 0 === $result['stats']['file_errors'] ) {
+				update_option( 'aegisguard_integrity_initialized', 1, false );
+			}
+			update_option( 'aegisguard_last_scan', current_time( 'mysql', true ), false );
+			Logger::log( 'security.scan_completed', 'Security scan completed.', $result['summary']['critical'] > 0 ? 'critical' : ( $result['summary']['high'] > 0 ? 'high' : 'info' ), $result['summary'] );
+		}
 		return $result;
 	}
 
-	public static function scan_files() {
-		$max_files            = (int) Settings::get( 'malware_scan_max_files', 10000 );
+	public static function scan_files( $cursor = array() ) {
+		$max_files            = max( 1, (int) Settings::get( 'malware_scan_max_files', 10000 ) );
 		$max_bytes            = (int) Settings::get( 'file_scan_max_bytes', 2097152 );
 		$findings             = array();
 		$scanned              = 0;
+		$skipped              = 0;
+		$errors               = 0;
 		$baseline_initialized = (bool) get_option( 'aegisguard_integrity_initialized', false );
-		$scan_started         = current_time( 'mysql', true );
-		$limit_reached        = false;
-		$root                 = wp_normalize_path( ABSPATH );
+		$next                 = null;
+		$root                 = untrailingslashit( wp_normalize_path( ABSPATH ) );
 		$exclude              = array(
 			wp_normalize_path( WP_CONTENT_DIR . '/cache/' ),
 			wp_normalize_path( WP_CONTENT_DIR . '/upgrade/' ),
@@ -87,63 +141,91 @@ final class Scanner {
 			$exclude[] = wp_normalize_path( trailingslashit( AEGISGUARD_DIR ) . 'vendor/' );
 		}
 
-		try {
-			$directory = new \RecursiveDirectoryIterator( $root, \FilesystemIterator::SKIP_DOTS );
-			$iterator  = new \RecursiveIteratorIterator( $directory, \RecursiveIteratorIterator::LEAVES_ONLY, \RecursiveIteratorIterator::CATCH_GET_CHILD );
-			foreach ( $iterator as $file ) {
-				if ( $scanned >= $max_files ) {
-					$limit_reached = true;
-					break;
-				}
-				if ( ! $file->isFile() || ! $file->isReadable() ) {
+		$processed = 0;
+		foreach ( self::file_entries( $root, $exclude, $cursor ) as $entry ) {
+			list( $path, $position, $ext ) = $entry;
+			if ( $processed >= $max_files ) {
+				$next = $last_position;
+				break;
+			}
+			++$processed;
+			$last_position = $position;
+			if ( null === $ext || ! is_readable( $path ) ) {
+				++$errors;
+				$findings[] = self::finding( 'medium', 'scan_error', implode( '/', $position ), 'This filesystem entry could not be read.' );
+				continue;
+			}
+			$file = new \SplFileInfo( $path );
+			try {
+				$size = $file->getSize();
+				if ( $size > $max_bytes ) {
+					++$skipped;
 					continue;
 				}
-				$path = wp_normalize_path( $file->getPathname() );
-				if ( self::excluded( $path, $exclude ) ) {
+				$content = @file_get_contents( $path, false, null, 0, $max_bytes + 1 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Local read, which may fail if a file disappears during a scan.
+				if ( ! is_string( $content ) ) {
+					++$errors;
 					continue;
 				}
-				$ext      = strtolower( pathinfo( $path, PATHINFO_EXTENSION ) );
-				$basename = strtolower( basename( $path ) );
-				if ( '.htaccess' === $basename ) {
-					$ext = 'htaccess';
-				}
-				if ( ! in_array( $ext, self::$allowed_extensions, true ) ) {
+				if ( strlen( $content ) > $max_bytes ) {
+					++$skipped;
 					continue;
 				}
 				++$scanned;
-				$size = (int) $file->getSize();
-				if ( $size <= 0 || $size > $max_bytes ) {
-					continue;
-				}
-				$content = file_get_contents( $path, false, null, 0, $max_bytes ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Local read-only scanner; WP_Filesystem adds no security value here.
-				if ( ! is_string( $content ) ) {
-					continue;
-				}
 				if ( wp_normalize_path( __FILE__ ) !== $path ) {
 					$findings = array_merge( $findings, self::inspect_content( $path, $content, $ext ) );
 				}
-				$integrity_finding = self::check_integrity_baseline( $path, $file, $ext, $baseline_initialized );
+				$integrity_finding = self::check_integrity_baseline( $path, $file, $ext, $baseline_initialized, hash( 'sha256', $content ) );
+				if ( is_wp_error( $integrity_finding ) ) {
+					++$errors;
+					continue;
+				}
 				if ( $integrity_finding ) {
 					$findings[] = $integrity_finding;
 				}
+			} catch ( \RuntimeException $exception ) {
+				++$errors;
 			}
-		} catch ( \UnexpectedValueException $exception ) {
-			$limit_reached = true;
-			$findings[]    = self::finding( 'medium', 'scan_error', $root, 'Part of the filesystem could not be read.', array( 'error' => $exception->getMessage() ) );
-		}
-		if ( $baseline_initialized && ! $limit_reached ) {
-			$findings = array_merge( $findings, self::missing_baseline_files( $scan_started ) );
-		}
-		if ( $limit_reached ) {
-			$findings[] = self::finding( 'info', 'scan_resource_limit', '', 'The filesystem scan stopped at its configured resource ceiling; missing-file checks were skipped to avoid false positives.' );
-		}
-		if ( $scanned > 0 && ! $baseline_initialized && ! $limit_reached ) {
-			update_option( 'aegisguard_integrity_initialized', 1, false );
 		}
 		return array(
 			'scanned'  => $scanned,
+			'skipped'  => $skipped,
+			'errors'   => $errors,
 			'findings' => $findings,
+			'cursor'   => $next,
 		);
+	}
+
+	private static function file_entries( $root, $exclude, $cursor, $ancestors = array() ) {
+		$dir   = $ancestors ? $root . '/' . implode( '/', $ancestors ) : $root;
+		$names = @scandir( $dir, SCANDIR_SORT_NONE ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- Report unreadable directories in the scan result.
+		if ( false === $names ) {
+			yield array( $dir, $ancestors, null );
+			return;
+		}
+		sort( $names, SORT_STRING );
+		foreach ( $names as $name ) {
+			if ( '.' === $name || '..' === $name ) {
+				continue;
+			}
+			$comparison = $cursor ? strcmp( $name, $cursor[0] ) : 1;
+			if ( $comparison < 0 || ( 0 === $comparison && 1 === count( $cursor ) ) ) {
+				continue;
+			}
+			$path = $dir . '/' . $name;
+			if ( is_link( $path ) || self::excluded( $path . '/', $exclude ) ) {
+				continue;
+			}
+			$position = array_merge( $ancestors, array( $name ) );
+			if ( is_dir( $path ) ) {
+				yield from self::file_entries( $root, $exclude, 0 === $comparison ? array_slice( $cursor, 1 ) : array(), $position );
+				continue;
+			}
+			$ext = '.htaccess' === strtolower( $name ) ? 'htaccess' : strtolower( pathinfo( $name, PATHINFO_EXTENSION ) );
+			if ( $comparison > 0 && is_file( $path ) && in_array( $ext, self::$allowed_extensions, true ) ) {
+				yield array( $path, $position, $ext );
+			}
+		}
 	}
 
 	public static function verify_core_integrity() {
@@ -174,38 +256,126 @@ final class Scanner {
 		);
 	}
 
-	public static function scan_database() {
+	public static function scan_database( $cursor = array() ) {
 		global $wpdb;
+		$patterns = array( '<script', 'javascript:', 'base64_decode(', 'gzinflate(', 'document.location', 'window.location=' );
+		$likes    = array_map(
+			static function ( $pattern ) use ( $wpdb ) {
+				return '%' . $wpdb->esc_like( $pattern ) . '%';
+			},
+			$patterns
+		);
+		$limit    = 200;
 		$findings = array();
 		$scanned  = 0;
-		$patterns = array( '<script', 'javascript:', 'base64_decode(', 'gzinflate(', 'document.location', 'window.location=' );
+		$next     = array();
 
-		foreach ( $patterns as $pattern ) {
-			$like     = '%' . $wpdb->esc_like( $pattern ) . '%';
-			$posts    = $wpdb->get_results( $wpdb->prepare( "SELECT ID, post_type FROM {$wpdb->posts} WHERE post_content LIKE %s LIMIT 50", $like ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded security inspection must read current post content.
-			$scanned += count( $posts );
-			foreach ( $posts as $post ) {
-				$findings[] = self::finding(
-					'medium',
-					'database_suspicious_content',
-					'post:' . (int) $post->ID,
-					'Suspicious executable or redirect pattern found in post content.',
-					array(
-						'pattern'   => $pattern,
-						'post_type' => $post->post_type,
-					)
-				);
+		if ( ! $cursor ) {
+			$cursor = array(
+				'posts'   => 0,
+				'options' => 0,
+			);
+		}
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded keyset inspection of current WordPress rows.
+		if ( isset( $cursor['posts'] ) ) {
+			$rows = $wpdb->get_results(
+				$wpdb->prepare(
+					'SELECT ID AS scan_id, post_type AS label,
+					 CASE WHEN post_content LIKE %s THEN 0 WHEN post_content LIKE %s THEN 1 WHEN post_content LIKE %s THEN 2
+					 WHEN post_content LIKE %s THEN 3 WHEN post_content LIKE %s THEN 4 WHEN post_content LIKE %s THEN 5 END AS match_id
+					 FROM %i WHERE ID > %d ORDER BY ID LIMIT %d',
+					$likes[0],
+					$likes[1],
+					$likes[2],
+					$likes[3],
+					$likes[4],
+					$likes[5],
+					$wpdb->posts,
+					$cursor['posts'],
+					$limit + 1
+				)
+			);
+			if ( $wpdb->last_error ) {
+				return self::database_error();
 			}
-			$options  = $wpdb->get_results( $wpdb->prepare( "SELECT option_name FROM {$wpdb->options} WHERE option_value LIKE %s LIMIT 50", $like ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded security inspection must read current option content.
-			$scanned += count( $options );
-			foreach ( $options as $option ) {
-				$findings[] = self::finding( 'high', 'database_suspicious_option', 'option:' . $option->option_name, 'Suspicious executable or redirect pattern found in an option.', array( 'pattern' => $pattern ) );
+			if ( count( $rows ) > $limit ) {
+				array_pop( $rows );
+				$next['posts'] = (int) end( $rows )->scan_id;
+			}
+			$scanned += count( $rows );
+			foreach ( $rows as $row ) {
+				if ( null !== $row->match_id ) {
+					$findings[] = self::finding(
+						'medium',
+						'database_suspicious_content',
+						'post:' . $row->scan_id,
+						'Suspicious executable or redirect pattern found in post content.',
+						array(
+							'pattern'   => $patterns[ $row->match_id ],
+							'post_type' => $row->label,
+						)
+					);
+				}
 			}
 		}
+		if ( isset( $cursor['options'] ) ) {
+			$rows = $wpdb->get_results(
+				$wpdb->prepare(
+					'SELECT option_id AS scan_id, option_name AS label,
+					 CASE WHEN option_value LIKE %s THEN 0 WHEN option_value LIKE %s THEN 1 WHEN option_value LIKE %s THEN 2
+					 WHEN option_value LIKE %s THEN 3 WHEN option_value LIKE %s THEN 4 WHEN option_value LIKE %s THEN 5 END AS match_id
+					 FROM %i WHERE option_id > %d AND option_name <> %s ORDER BY option_id LIMIT %d',
+					$likes[0],
+					$likes[1],
+					$likes[2],
+					$likes[3],
+					$likes[4],
+					$likes[5],
+					$wpdb->options,
+					$cursor['options'],
+					'aegisguard_last_scan_results',
+					$limit + 1
+				)
+			);
+			if ( $wpdb->last_error ) {
+				return self::database_error();
+			}
+			if ( count( $rows ) > $limit ) {
+				array_pop( $rows );
+				$next['options'] = (int) end( $rows )->scan_id;
+			}
+			$scanned += count( $rows );
+			foreach ( $rows as $row ) {
+				if ( null !== $row->match_id ) {
+					$findings[] = self::finding( 'high', 'database_suspicious_option', 'option:' . $row->label, 'Suspicious executable or redirect pattern found in an option.', array( 'pattern' => $patterns[ $row->match_id ] ) );
+				}
+			}
+		}
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		return array(
 			'scanned'  => $scanned,
 			'findings' => $findings,
+			'cursor'   => $next ? $next : null,
 		);
+	}
+
+	private static function database_error() {
+		return new \WP_Error( 'aegisguard_scan_database_failed', __( 'A database scan query failed. The scanner kept its last saved position.', 'aegisguard-security' ) );
+	}
+
+	private static function lock_name() {
+		global $wpdb;
+		return 'aegisguard_scan_' . substr( hash( 'sha256', DB_NAME . '|' . $wpdb->prefix ), 0, 32 );
+	}
+
+	private static function lock() {
+		global $wpdb;
+		return '1' === (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 0)', self::lock_name() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Serialize scan state across requests.
+	}
+
+	private static function unlock() {
+		global $wpdb;
+		$wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', self::lock_name() ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Release the scan advisory lock.
 	}
 
 	public static function scan_configuration() {
@@ -318,10 +488,23 @@ final class Scanner {
 
 	public static function reset_integrity_baseline() {
 		global $wpdb;
-		$table = $wpdb->prefix . 'aegisguard_integrity';
-		$wpdb->query( "TRUNCATE TABLE {$table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Explicit administrator-authorized reset of the internal integrity table.
-		delete_option( 'aegisguard_integrity_initialized' );
-		Logger::log( 'security.integrity_baseline_reset', 'File-integrity baseline reset by an authorized administrator.', 'high' );
+		if ( ! self::lock() ) {
+			return false;
+		}
+		try {
+			$result = get_option( 'aegisguard_last_scan_results', array() );
+			if ( ! empty( $result['pending'] ) && ! delete_option( 'aegisguard_last_scan_results' ) ) {
+				return false;
+			}
+			if ( false === $wpdb->query( $wpdb->prepare( 'TRUNCATE TABLE %i', $wpdb->prefix . 'aegisguard_integrity' ) ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Explicit administrator-authorized reset of an internal table.
+				return false;
+			}
+			delete_option( 'aegisguard_integrity_initialized' );
+			Logger::log( 'security.integrity_baseline_reset', 'File-integrity baseline reset by an authorized administrator.', 'high' );
+			return true;
+		} finally {
+			self::unlock();
+		}
 	}
 
 
@@ -715,18 +898,20 @@ final class Scanner {
 
 
 
-	private static function check_integrity_baseline( $path, $file, $ext, $baseline_initialized ) {
+	private static function check_integrity_baseline( $path, $file, $ext, $baseline_initialized, $file_hash ) {
 		global $wpdb;
 		$table      = $wpdb->prefix . 'aegisguard_integrity';
 		$normalized = wp_normalize_path( $path );
 		$relative   = 0 === strpos( $normalized, wp_normalize_path( ABSPATH ) ) ? ltrim( substr( $normalized, strlen( wp_normalize_path( ABSPATH ) ) ), '/' ) : $normalized;
 		$path_hash  = hash( 'sha256', $relative );
-		$file_hash  = hash_file( 'sha256', $path );
 		$existing   = $wpdb->get_row( $wpdb->prepare( "SELECT id, file_hash FROM {$table} WHERE path_hash = %s LIMIT 1", $path_hash ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Integrity scan requires the current internal baseline row.
 
+		if ( $wpdb->last_error ) {
+			return self::database_error();
+		}
 		if ( $existing ) {
 			if ( ! hash_equals( (string) $existing->file_hash, (string) $file_hash ) ) {
-				$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Updates the plugin's current integrity baseline metadata.
+				$updated = $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Updates the plugin's current integrity baseline metadata.
 					$table,
 					array(
 						'file_size'  => (int) $file->getSize(),
@@ -737,10 +922,13 @@ final class Scanner {
 					array( '%d', '%d', '%s' ),
 					array( '%d' )
 				);
+				if ( false === $updated ) {
+					return self::database_error();
+				}
 				return self::finding( 'medium', 'file_modified_since_baseline', $relative, 'File contents changed since the accepted integrity baseline.' );
 			}
-			$wpdb->update( $table, array( 'last_seen' => current_time( 'mysql', true ) ), array( 'id' => (int) $existing->id ), array( '%s' ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Updates the plugin's current integrity baseline timestamp.
-			return null;
+			$updated = $wpdb->update( $table, array( 'last_seen' => current_time( 'mysql', true ) ), array( 'id' => (int) $existing->id ), array( '%s' ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Updates the plugin's current integrity baseline timestamp.
+			return false === $updated ? self::database_error() : null;
 		}
 
 		if ( $baseline_initialized ) {
@@ -748,7 +936,7 @@ final class Scanner {
 			return self::finding( $severity, 'file_new_since_baseline', $relative, 'A new scannable file appeared after the accepted integrity baseline was established.' );
 		}
 
-		$wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Inserts an internal integrity baseline row.
+		$inserted = $wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Inserts an internal integrity baseline row.
 			$table,
 			array(
 				'file_path'  => $relative,
@@ -761,21 +949,31 @@ final class Scanner {
 			),
 			array( '%s', '%s', '%s', '%d', '%d', '%s', '%s' )
 		);
-		return null;
+		return false === $inserted ? self::database_error() : null;
 	}
 
-	private static function missing_baseline_files( $scan_started ) {
+	private static function missing_baseline_files( $cursor ) {
 		global $wpdb;
-		$table    = $wpdb->prefix . 'aegisguard_integrity';
-		$rows     = $wpdb->get_results( $wpdb->prepare( "SELECT file_path FROM {$table} WHERE last_seen < %s ORDER BY id ASC LIMIT 500", $scan_started ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Bounded query against the current internal integrity baseline.
+		$table = $wpdb->prefix . 'aegisguard_integrity';
+		$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT id, file_path FROM %i WHERE id > %d ORDER BY id LIMIT 501', $table, $cursor ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded keyset query against the accepted baseline.
+		if ( $wpdb->last_error ) {
+			return self::database_error();
+		}
+		$next = null;
+		if ( count( $rows ) > 500 ) {
+			array_pop( $rows );
+			$next = (int) end( $rows )->id;
+		}
 		$findings = array();
-		foreach ( (array) $rows as $row ) {
-			$relative = isset( $row->file_path ) ? (string) $row->file_path : '';
-			if ( '' !== $relative && ! file_exists( ABSPATH . ltrim( $relative, '/' ) ) ) {
-				$findings[] = self::finding( 'medium', 'file_missing_since_baseline', $relative, 'A file from the accepted integrity baseline is now missing.' );
+		foreach ( $rows as $row ) {
+			if ( '' !== $row->file_path && ! file_exists( ABSPATH . ltrim( $row->file_path, '/' ) ) ) {
+				$findings[] = self::finding( 'medium', 'file_missing_since_baseline', $row->file_path, 'A file from the accepted integrity baseline is now missing.' );
 			}
 		}
-		return $findings;
+		return array(
+			'findings' => $findings,
+			'cursor'   => $next,
+		);
 	}
 
 	private static function excluded( $path, $prefixes ) {

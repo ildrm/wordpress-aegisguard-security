@@ -12,7 +12,9 @@ final class Logger {
 
 	public static function log( $type, $message, $severity = 'info', $context = array() ) {
 
-		if ( ! Settings::get( 'audit_logging', true ) && 0 !== strpos( $type, 'security.' ) ) {
+		$severity = in_array( $severity, array( 'info', 'low', 'medium', 'high', 'critical' ), true ) ? $severity : 'info';
+		if ( ! Settings::get( 'audit_logging' ) ) {
+			self::maybe_alert( $type, $message, $severity );
 			return false;
 		}
 
@@ -22,7 +24,6 @@ final class Logger {
 		$path         = self::redact_url( $path );
 		$method       = isset( $_SERVER['REQUEST_METHOD'] ) ? sanitize_key( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : '';
 		$method       = strtoupper( substr( $method, 0, 10 ) );
-		$severity     = in_array( $severity, array( 'info', 'low', 'medium', 'high', 'critical' ), true ) ? $severity : 'info';
 		$created_at   = current_time( 'mysql', true );
 		$event_type   = self::normalize_event_type( $type );
 		$actor_id     = get_current_user_id();

@@ -41,17 +41,16 @@ final class LoginProtection {
 
 	public static function rate_limit_authentication( $user, $username, $password ) {
 		unset( $password );
-		if ( ! Settings::get( 'login_rate_limit', true ) || empty( $username ) ) {
+		if ( ! Settings::get( 'login_rate_limit' ) || '' === $username ) {
 			return $user;
 		}
 		$key              = self::key( $username );
 		$ip_key           = self::ip_key();
-		$data             = get_transient( $key );
-		$ip_data          = get_transient( $ip_key );
+		$counts           = self::counts( $key, $ip_key );
 		$limit            = (int) Settings::get( 'login_attempts', 8 );
 		$ip_limit         = max( 20, $limit * 4 );
-		$identity_limited = is_array( $data ) && ! empty( $data['count'] ) && (int) $data['count'] >= $limit;
-		$ip_limited       = is_array( $ip_data ) && ! empty( $ip_data['count'] ) && (int) $ip_data['count'] >= $ip_limit;
+		$identity_limited = (int) ( $counts[ $key ]->failures ?? 0 ) >= $limit;
+		$ip_limited       = (int) ( $counts[ $ip_key ]->failures ?? 0 ) >= $ip_limit;
 		if ( $identity_limited || $ip_limited ) {
 			Logger::log(
 				'security.login_rate_limited',
@@ -68,21 +67,35 @@ final class LoginProtection {
 	}
 
 	public static function record_failure( $username, $error = null ) {
-		unset( $error );
-		if ( ! Settings::get( 'login_rate_limit', true ) ) {
+		if ( ! Settings::get( 'login_rate_limit' ) || '' === $username || ( is_wp_error( $error ) && 'aegisguard_rate_limited' === $error->get_error_code() ) ) {
 			return;
 		}
-		$key      = self::key( $username );
-		$ip_key   = self::ip_key();
-		$data     = get_transient( $key );
-		$ip_data  = get_transient( $ip_key );
-		$count    = is_array( $data ) && isset( $data['count'] ) ? (int) $data['count'] : 0;
-		$ip_count = is_array( $ip_data ) && isset( $ip_data['count'] ) ? (int) $ip_data['count'] : 0;
-		++$count;
-		++$ip_count;
-		$window = (int) Settings::get( 'login_window', 900 );
-		set_transient( $key, array( 'count' => $count ), $window );
-		set_transient( $ip_key, array( 'count' => $ip_count ), $window );
+		global $wpdb;
+		$key    = self::key( $username );
+		$ip_key = self::ip_key();
+		$window = max( 60, (int) Settings::get( 'login_window', 900 ) );
+		$table  = $wpdb->prefix . 'aegisguard_login_limits';
+		// Both rows are incremented in one statement. The first failure starts the window.
+		$previous = $wpdb->suppress_errors();
+		try {
+			$wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic counter increments must bypass option and object caches.
+				$wpdb->prepare(
+					'INSERT INTO %i (bucket, failures, expires_at) VALUES (%s, 1, UNIX_TIMESTAMP() + %d), (%s, 1, UNIX_TIMESTAMP() + %d)
+					 ON DUPLICATE KEY UPDATE failures = IF(expires_at <= UNIX_TIMESTAMP(), 1, LEAST(failures + 1, 2147483647)),
+					 expires_at = IF(expires_at <= UNIX_TIMESTAMP(), UNIX_TIMESTAMP() + %d, expires_at)',
+					$table,
+					$ip_key,
+					$window,
+					$key,
+					$window,
+					$window
+				)
+			);
+		} finally {
+			$wpdb->suppress_errors( $previous );
+		}
+		$counts = self::counts( $key, $ip_key );
+		$count  = (int) ( $counts[ $key ]->failures ?? 0 );
 		Logger::log(
 			'security.login_failed',
 			'Failed login attempt.',
@@ -95,10 +108,34 @@ final class LoginProtection {
 	}
 
 	public static function record_success( $user_login, $user ) {
-
-		delete_transient( self::key( $user_login ) );
+		global $wpdb;
+		if ( Settings::get( 'login_rate_limit' ) ) {
+			$previous = $wpdb->suppress_errors();
+			try {
+				$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE bucket IN (%s, %s)', $wpdb->prefix . 'aegisguard_login_limits', self::key( $user_login ), self::key( $user->user_email ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Reset only identity buckets, preserving the shared IP cap.
+			} finally {
+				$wpdb->suppress_errors( $previous );
+			}
+		}
 		Logger::log( 'auth.login_success', 'User logged in.', 'info', array( 'user_id' => $user->ID ) );
 	}
+
+	public static function prune( $batch ) {
+		global $wpdb;
+		$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE expires_at <= UNIX_TIMESTAMP() ORDER BY expires_at LIMIT %d', $wpdb->prefix . 'aegisguard_login_limits', max( 1, (int) $batch ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Prune expired counter rows in bounded batches.
+	}
+
+	private static function counts( $key, $ip_key ) {
+		global $wpdb;
+		// A storage outage must not lock users out of WordPress.
+		$previous = $wpdb->suppress_errors();
+		try {
+			return $wpdb->get_results( $wpdb->prepare( 'SELECT bucket, failures FROM %i WHERE bucket IN (%s, %s) AND expires_at > UNIX_TIMESTAMP()', $wpdb->prefix . 'aegisguard_login_limits', $key, $ip_key ), OBJECT_K ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Both counters must be read directly from the shared database.
+		} finally {
+			$wpdb->suppress_errors( $previous );
+		}
+	}
+
 	public static function generic_login_errors( $errors, $redirect_to ) {
 		unset( $redirect_to );
 		if ( ! Settings::get( 'protect_user_enumeration', true ) || ! ( $errors instanceof \WP_Error ) ) {
