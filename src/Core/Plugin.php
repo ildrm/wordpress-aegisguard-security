@@ -44,7 +44,9 @@ final class Plugin {
 		OutboundMonitor::register();
 		UploadProtection::register();
 		ActivityMonitor::register();
-		Scanner::register();
+		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+			Scanner::register();
+		}
 		Privacy::register();
 
 		if ( is_admin() ) {

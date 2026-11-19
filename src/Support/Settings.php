@@ -8,36 +8,40 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class Settings {
 	const OPTION = 'aegisguard_settings';
 
+	private const DEFAULTS = array(
+		'waf_enabled'                 => false,
+		'waf_mode'                    => 'balanced',
+		'login_rate_limit'            => false,
+		'login_attempts'              => 8,
+		'login_window'                => 900,
+		'block_duration'              => 1800,
+		'disable_xmlrpc'              => false,
+		'disable_pingbacks'           => true,
+		'protect_user_enumeration'    => true,
+		'disable_file_editor'         => true,
+		'security_headers'            => true,
+		'upload_protection'           => false,
+		'audit_logging'               => false,
+		'event_retention_days'        => 30,
+		'email_alerts'                => false,
+		'alert_email'                 => null,
+		'alert_threshold'             => 'high',
+		'privacy_ip_anonymization'    => true,
+		'trust_proxy_headers'         => false,
+		'trusted_proxy_ips'           => '',
+		'malware_scan_max_files'      => 10000,
+		'file_scan_max_bytes'         => 2097152,
+		'database_scan'               => false,
+		'woocommerce_monitoring'      => false,
+		'delete_data_on_uninstall'    => false,
+		'lockdown_allow_admins'       => true,
+		'log_retention_cleanup_batch' => 1000,
+	);
+
 	public static function defaults() {
-		return array(
-			'waf_enabled'                 => false,
-			'waf_mode'                    => 'balanced',
-			'login_rate_limit'            => false,
-			'login_attempts'              => 8,
-			'login_window'                => 900,
-			'block_duration'              => 1800,
-			'disable_xmlrpc'              => false,
-			'disable_pingbacks'           => true,
-			'protect_user_enumeration'    => true,
-			'disable_file_editor'         => true,
-			'security_headers'            => true,
-			'upload_protection'           => false,
-			'audit_logging'               => false,
-			'event_retention_days'        => 30,
-			'email_alerts'                => false,
-			'alert_email'                 => get_option( 'admin_email' ),
-			'alert_threshold'             => 'high',
-			'privacy_ip_anonymization'    => true,
-			'trust_proxy_headers'         => false,
-			'trusted_proxy_ips'           => '',
-			'malware_scan_max_files'      => 10000,
-			'file_scan_max_bytes'         => 2097152,
-			'database_scan'               => false,
-			'woocommerce_monitoring'      => false,
-			'delete_data_on_uninstall'    => false,
-			'lockdown_allow_admins'       => true,
-			'log_retention_cleanup_batch' => 1000,
-		);
+		$defaults                = self::DEFAULTS;
+		$defaults['alert_email'] = get_option( 'admin_email' );
+		return $defaults;
 	}
 
 	public static function all() {
@@ -46,9 +50,14 @@ final class Settings {
 	}
 
 	public static function get( $key, $default_value = null ) {
-
-		$settings = self::all();
-		return array_key_exists( $key, $settings ) ? $settings[ $key ] : $default_value;
+		$saved = get_option( self::OPTION, array() );
+		if ( is_array( $saved ) && array_key_exists( $key, $saved ) ) {
+			return $saved[ $key ];
+		}
+		if ( 'alert_email' === $key ) {
+			return get_option( 'admin_email' );
+		}
+		return self::DEFAULTS[ $key ] ?? $default_value;
 	}
 
 	public static function sanitize( $input ) {
