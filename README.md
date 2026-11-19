@@ -25,6 +25,7 @@ AegisGuard Security is a modular WordPress security agent that combines request 
 - MFA secrets encrypted at rest with libsodium secretbox when available, otherwise AES-256-GCM via OpenSSL, using a dedicated per-site encryption key independent of WordPress authentication salts.
 - Ten one-use recovery codes stored only as WordPress password hashes.
 - One-use recovery codes provide a separate account-recovery path without exposing the MFA secret.
+- The MFA prompt covers the standard WordPress login page. REST and XML-RPC authentication, WP-CLI, and custom login forms need separate controls.
 - Session count visibility and one-click termination of all other sessions for the current user.
 
 ### Scanner and integrity engine
@@ -38,6 +39,10 @@ AegisGuard Security is a modular WordPress security agent that combines request 
 - File-integrity baseline stored in a dedicated table, including changed/new/missing-file detection when a complete scan finishes.
 - Database scanning of posts and options.
 - Sensitive web-root/backup file checks, privileged-user MFA posture checks, and suspicious high-frequency cron review.
+
+Fresh installations enable baseline hardening and IP anonymization. The firewall, login rate limiter, upload inspection, audit logging, email alerts, database scanning, and WooCommerce monitoring are opt-in. Saved settings continue to apply on upgrade.
+
+The login limiter uses shared database counters with expiry measured from the first failure in a window. If counter storage fails, WordPress sign-in remains available and the limiter resumes when storage recovers. The scan screen and `wp aegisguard scan` save progress after each batch. Continue the scan until its filesystem, baseline, and enabled database checks finish.
 - Verification of the local audit-event hash chain using a dedicated per-site audit key.
 - PHP persistence checks for `auto_prepend_file` and `auto_append_file`.
 - WordPress/plugin/theme update posture.

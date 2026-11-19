@@ -32,6 +32,7 @@ function aegisguard_uninstall_site() {
 		$wpdb->prefix . 'aegisguard_events',
 		$wpdb->prefix . 'aegisguard_incidents',
 		$wpdb->prefix . 'aegisguard_integrity',
+		$wpdb->prefix . 'aegisguard_login_limits',
 	);
 
 	foreach ( $tables as $table ) {
@@ -55,6 +56,7 @@ function aegisguard_uninstall_site() {
 	) {
 		delete_option( $option );
 	}
+	delete_transient( 'aegisguard_upgrade_retry' );
 
 	$counter_pattern = $wpdb->esc_like( 'aegisguard_mfa_counter_' ) . '%';
 	$lock_pattern    = $wpdb->esc_like( 'aegisguard_mfa_recovery_lock_' ) . '%';

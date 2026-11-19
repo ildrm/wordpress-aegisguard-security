@@ -17,6 +17,17 @@ final class ScannerCliCommand {
 	 */
 	public function scan() {
 		$result = Scanner::run_full_scan();
+		if ( is_wp_error( $result ) ) {
+			\WP_CLI::error( $result->get_error_message() );
+			return;
+		}
+		if ( ! empty( $result['stats']['files_skipped'] ) || ! empty( $result['stats']['file_errors'] ) ) {
+			\WP_CLI::warning( sprintf( 'Unscanned entries: %d over the byte limit, %d read or storage errors.', $result['stats']['files_skipped'], $result['stats']['file_errors'] ) );
+		}
+		if ( ! empty( $result['pending'] ) ) {
+			\WP_CLI::log( sprintf( 'Scan progress saved with %d finding(s). Run the same command to continue.', $result['summary']['total'] ) );
+			return;
+		}
 		\WP_CLI::success( sprintf( 'Scan complete: %d finding(s), %d critical, %d high.', $result['summary']['total'], $result['summary']['critical'], $result['summary']['high'] ) );
 	}
 

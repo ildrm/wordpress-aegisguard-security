@@ -54,7 +54,7 @@ final class Plugin {
 
 	public function maybe_upgrade() {
 		$version = get_option( 'aegisguard_db_version', '0' );
-		if ( version_compare( $version, Activator::DB_VERSION, '<' ) ) {
+		if ( version_compare( $version, Activator::DB_VERSION, '<' ) && ! get_transient( 'aegisguard_upgrade_retry' ) ) {
 			Activator::install_site();
 		}
 	}
@@ -76,5 +76,6 @@ final class Plugin {
 		$cutoff = gmdate( 'Y-m-d H:i:s', time() - ( $days * DAY_IN_SECONDS ) );
 		$batch  = (int) \AegisGuard\Support\Settings::get( 'log_retention_cleanup_batch', 1000 );
 		Logger::prune( $cutoff, $batch );
+		LoginProtection::prune( $batch );
 	}
 }
