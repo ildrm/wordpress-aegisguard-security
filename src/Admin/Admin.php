@@ -3,6 +3,7 @@ namespace AegisGuard\Admin;
 
 use AegisGuard\Core\Logger;
 use AegisGuard\Security\Mfa;
+use AegisGuard\Security\Quarantine;
 use AegisGuard\Security\Scanner;
 use AegisGuard\Support\Capabilities;
 use AegisGuard\Support\Settings;
@@ -159,7 +160,7 @@ endif;
 
 	public static function quarantine_page() {
 		self::require_cap( Capabilities::INCIDENT );
-		$items = Scanner::list_quarantine();
+		$items = Quarantine::all();
 		?>
 		<div class="wrap aegisguard-wrap">
 			<?php self::header( __( 'Encrypted Quarantine', 'aegisguard-security' ), __( 'Review files that were explicitly quarantined. Records are encrypted at rest and can only be restored to their authenticated original path.', 'aegisguard-security' ) ); ?>
@@ -616,7 +617,7 @@ endif;
 		self::require_cap( Capabilities::INCIDENT );
 		check_admin_referer( 'aegisguard_quarantine' );
 		$path   = isset( $_POST['path'] ) ? wp_normalize_path( sanitize_text_field( wp_unslash( $_POST['path'] ) ) ) : '';
-		$result = Scanner::quarantine( $path );
+		$result = Quarantine::store( $path );
 		$notice = is_wp_error( $result ) ? 'quarantine_failed' : 'quarantine_success';
 		wp_safe_redirect( add_query_arg( 'ag_notice', $notice, admin_url( 'admin.php?page=aegisguard-scanner' ) ) );
 		exit;
@@ -627,7 +628,7 @@ endif;
 		self::require_cap( Capabilities::INCIDENT );
 		$record = isset( $_POST['record'] ) ? sanitize_file_name( wp_unslash( $_POST['record'] ) ) : '';
 		check_admin_referer( 'aegisguard_restore_quarantine_' . $record );
-		$result = Scanner::restore_quarantine( $record );
+		$result = Quarantine::restore( $record );
 		$notice = is_wp_error( $result ) ? 'quarantine_restore_failed' : 'quarantine_restore_success';
 		wp_safe_redirect( add_query_arg( 'ag_notice', $notice, admin_url( 'admin.php?page=aegisguard-quarantine' ) ) );
 		exit;
@@ -637,7 +638,7 @@ endif;
 		self::require_cap( Capabilities::INCIDENT );
 		$record = isset( $_POST['record'] ) ? sanitize_file_name( wp_unslash( $_POST['record'] ) ) : '';
 		check_admin_referer( 'aegisguard_delete_quarantine_' . $record );
-		$result = Scanner::delete_quarantine( $record );
+		$result = Quarantine::delete( $record );
 		$notice = is_wp_error( $result ) ? 'quarantine_delete_failed' : 'quarantine_delete_success';
 		wp_safe_redirect( add_query_arg( 'ag_notice', $notice, admin_url( 'admin.php?page=aegisguard-quarantine' ) ) );
 		exit;
