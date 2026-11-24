@@ -24,13 +24,17 @@ function ag_assert_true( $actual, $message ) {
 
 $mfa_reflection = new ReflectionClass( 'AegisGuard\\Security\\Mfa' );
 $totp           = $mfa_reflection->getMethod( 'totp' );
-$totp->setAccessible( true );
+if ( PHP_VERSION_ID < 80100 ) {
+	$totp->setAccessible( true );
+}
 $secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
 ag_assert_same( '287082', $totp->invoke( null, $secret, 1 ), 'RFC 6238 SHA-1 six-digit TOTP vector at counter 1.' );
 
 $firewall_reflection = new ReflectionClass( 'AegisGuard\\Security\\RuntimeFirewall' );
 $analyze             = $firewall_reflection->getMethod( 'analyze' );
-$analyze->setAccessible( true );
+if ( PHP_VERSION_ID < 80100 ) {
+	$analyze->setAccessible( true );
+}
 $normal = $analyze->invoke( null, "GET\n/about?ref=summer\nref=summer\nMozilla/5.0" );
 ag_assert_same( 0, $normal['score'], 'Normal request must not receive a firewall score.' );
 

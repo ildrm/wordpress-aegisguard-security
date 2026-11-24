@@ -13,7 +13,13 @@ final class Activator {
 
 	public static function activate( $network_wide = false ) {
 		if ( is_multisite() && $network_wide ) {
-			$site_ids = get_sites( array( 'fields' => 'ids' ) );
+			$site_ids = get_sites(
+				array(
+					'fields'     => 'ids',
+					'number'     => 0,
+					'network_id' => get_current_network_id(),
+				)
+			);
 			foreach ( $site_ids as $site_id ) {
 				switch_to_blog( (int) $site_id );
 				$installed = self::install_site();
@@ -35,7 +41,13 @@ final class Activator {
 
 	public static function deactivate( $network_wide = false ) {
 		if ( is_multisite() && $network_wide ) {
-			$site_ids = get_sites( array( 'fields' => 'ids' ) );
+			$site_ids = get_sites(
+				array(
+					'fields'     => 'ids',
+					'number'     => 0,
+					'network_id' => get_current_network_id(),
+				)
+			);
 			foreach ( $site_ids as $site_id ) {
 				switch_to_blog( (int) $site_id );
 				wp_clear_scheduled_hook( 'aegisguard_daily_maintenance' );

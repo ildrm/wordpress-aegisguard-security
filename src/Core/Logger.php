@@ -56,12 +56,14 @@ final class Logger {
 				),
 				array( '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%s' )
 			);
+			if ( false !== $result ) {
+				\AegisGuard\Security\IncidentManager::observe( (int) $wpdb->insert_id, $type, $message, $severity );
+			}
 		} finally {
 			self::release_chain_lock();
 		}
 
 		if ( false !== $result ) {
-			\AegisGuard\Security\IncidentManager::observe( (int) $wpdb->insert_id, $type, $message, $severity );
 			self::maybe_alert( $type, $message, $severity );
 		}
 		return false !== $result;
@@ -75,7 +77,17 @@ final class Logger {
 			global $wpdb;
 			$table      = $wpdb->prefix . 'aegisguard_events';
 			$batch      = max( 100, min( 5000, absint( $batch ) ) );
-			$candidates = $wpdb->get_results( $wpdb->prepare( "SELECT id, chain_hash FROM {$table} WHERE created_at < %s ORDER BY id ASC LIMIT %d", sanitize_text_field( $cutoff ), $batch ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Serialized retention query against the internal audit table; values use placeholders.
+			$candidates = $wpdb->get_results( $wpdb->prepare( "SELECT id, chain_hash, created_at FROM {$table} ORDER BY id ASC LIMIT %d", $batch ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Serialized retention query against the internal audit table; values use placeholders.
+			if ( $wpdb->last_error ) {
+				return false;
+			}
+			// Retention may remove only a contiguous prefix of the hash chain.
+			foreach ( $candidates as $index => $row ) {
+				if ( $row['created_at'] >= $cutoff ) {
+					$candidates = array_slice( $candidates, 0, $index );
+					break;
+				}
+			}
 			if ( ! $candidates ) {
 				return 0;
 			}
@@ -86,12 +98,27 @@ final class Logger {
 			}
 			$placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
 			$sql          = $wpdb->prepare( "DELETE FROM {$table} WHERE id IN ({$placeholders})", $ids ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Table name and placeholder list are generated internally; values are integer IDs.
-			$deleted      = $wpdb->query( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Query is prepared immediately above and serialized under the audit lock.
-			if ( count( $ids ) !== (int) $deleted || empty( $tail['chain_hash'] ) ) {
+			// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Commit the retention boundary and deleted prefix together under the chain lock.
+			if ( empty( $tail['chain_hash'] ) || false === $wpdb->query( 'START TRANSACTION' ) ) {
 				return false;
 			}
-			update_option( 'aegisguard_audit_anchor', (string) $tail['chain_hash'], false );
-			return (int) $deleted;
+			$committed = false;
+			try {
+				$deleted = $wpdb->query( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Prepared immediately above.
+				$anchor  = $wpdb->query( $wpdb->prepare( 'INSERT INTO %i (option_name, option_value, autoload) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE option_value = VALUES(option_value)', $wpdb->options, 'aegisguard_audit_anchor', $tail['chain_hash'], 'no' ) );
+				if ( count( $ids ) !== $deleted || false === $anchor || false === $wpdb->query( 'COMMIT' ) ) {
+					return false;
+				}
+				$committed = true;
+				wp_cache_delete( 'aegisguard_audit_anchor', 'options' );
+				wp_cache_delete( 'notoptions', 'options' );
+				return $deleted;
+			} finally {
+				if ( ! $committed ) {
+					$wpdb->query( 'ROLLBACK' );
+				}
+			}
+			// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		} finally {
 			self::release_chain_lock();
 		}
@@ -112,6 +139,14 @@ final class Logger {
 			$table = $wpdb->prefix . 'aegisguard_events';
 			$limit = max( 2, min( 10000, absint( $limit ) ) );
 			$rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM (SELECT id, created_at, event_type, severity, actor_user_id, ip_address, request_method, request_path, message, context, chain_hash FROM {$table} ORDER BY id DESC LIMIT %d) AS recent ORDER BY id ASC", $limit ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Serialized verification query against the internal audit table.
+			if ( $wpdb->last_error ) {
+				return array(
+					'valid'           => false,
+					'checked'         => 0,
+					'broken_event_id' => 0,
+					'error'           => 'database_unavailable',
+				);
+			}
 			if ( ! $rows ) {
 				return array(
 					'valid'           => true,
@@ -124,7 +159,7 @@ final class Logger {
 			$previous = '';
 			if ( $first_id > 1 ) {
 				$previous_hash = $wpdb->get_var( $wpdb->prepare( "SELECT chain_hash FROM {$table} WHERE id < %d ORDER BY id DESC LIMIT 1", $first_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Serialized chain predecessor query against the internal audit table.
-				$previous      = is_string( $previous_hash ) && '' !== $previous_hash ? $previous_hash : (string) get_option( 'aegisguard_audit_anchor', '' );
+				$previous      = is_string( $previous_hash ) && '' !== $previous_hash ? $previous_hash : self::retention_anchor();
 			}
 
 			$checked = 0;
@@ -156,7 +191,12 @@ final class Logger {
 		global $wpdb;
 		$table = $wpdb->prefix . 'aegisguard_events';
 		$hash  = $wpdb->get_var( "SELECT chain_hash FROM {$table} ORDER BY id DESC LIMIT 1" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Serialized query against the internal append-only audit table.
-		return is_string( $hash ) && '' !== $hash ? $hash : (string) get_option( 'aegisguard_audit_anchor', '' );
+		return is_string( $hash ) && '' !== $hash ? $hash : self::retention_anchor();
+	}
+
+	private static function retention_anchor() {
+		global $wpdb;
+		return (string) $wpdb->get_var( $wpdb->prepare( 'SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, 'aegisguard_audit_anchor' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read the current committed boundary under the same lock as the event rows.
 	}
 
 	private static function acquire_chain_lock() {

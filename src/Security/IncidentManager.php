@@ -17,18 +17,18 @@ final class IncidentManager {
 		global $wpdb;
 		$table       = $wpdb->prefix . 'aegisguard_incidents';
 		$fingerprint = hash( 'sha256', preg_replace( '/[^a-z0-9._-]/', '', strtolower( (string) $type ) ) . '|' . sanitize_text_field( $message ) );
-		$existing    = $wpdb->get_row( $wpdb->prepare( "SELECT id, context FROM {$table} WHERE fingerprint = %s AND status = 'open' ORDER BY id DESC LIMIT 1", $fingerprint ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Incident correlation requires a current read from the internal table.
+		$existing    = $wpdb->get_row( $wpdb->prepare( "SELECT id, severity, context FROM {$table} WHERE fingerprint = %s AND status = 'open' ORDER BY id DESC LIMIT 1", $fingerprint ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Incident correlation requires a current read from the internal table.
 		$now         = current_time( 'mysql', true );
 
 		if ( $existing ) {
 			$old_context = json_decode( (string) $existing->context, true );
 			$old_context = is_array( $old_context ) ? $old_context : array();
 			$count       = isset( $old_context['event_count'] ) ? (int) $old_context['event_count'] + 1 : 2;
-			$wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Updates the plugin's current incident correlation record.
+			$updated     = $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Updates the plugin's current incident correlation record.
 				$table,
 				array(
 					'updated_at' => $now,
-					'severity'   => $severity,
+					'severity'   => 'critical' === $existing->severity ? 'critical' : $severity,
 					'context'    => wp_json_encode(
 						array(
 							'event_count'     => $count,
@@ -36,11 +36,16 @@ final class IncidentManager {
 						)
 					),
 				),
-				array( 'id' => (int) $existing->id ),
+				array(
+					'id'     => (int) $existing->id,
+					'status' => 'open',
+				),
 				array( '%s', '%s', '%s' ),
-				array( '%d' )
+				array( '%d', '%s' )
 			);
-			return;
+			if ( 0 !== $updated ) {
+				return;
+			}
 		}
 
 		$wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Inserts a new plugin incident record.

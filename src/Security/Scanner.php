@@ -64,6 +64,9 @@ final class Scanner {
 				self::scan_scheduled_tasks()
 			);
 			$audit_check                           = Logger::verify_chain( 2000 );
+			if ( ! empty( $audit_check['error'] ) ) {
+				return new \WP_Error( 'aegisguard_audit_unavailable', __( 'The audit log is temporarily unavailable. Retry the scan.', 'aegisguard-security' ) );
+			}
 			if ( empty( $audit_check['valid'] ) ) {
 				$findings[] = self::finding( 'critical', 'audit_chain_invalid', 'event:' . (int) $audit_check['broken_event_id'], 'The local audit-event hash chain could not be verified. Investigate possible log tampering or key loss.' );
 			}

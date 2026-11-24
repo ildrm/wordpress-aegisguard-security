@@ -113,7 +113,9 @@ try {
 
 	$reflection = new ReflectionClass( Mfa::class );
 	$totp       = $reflection->getMethod( 'totp' );
-	$totp->setAccessible( true );
+	if ( PHP_VERSION_ID < 80100 ) {
+		$totp->setAccessible( true );
+	}
 	$counter    = (int) floor( time() / 30 );
 	$code       = $totp->invoke( null, $secret, $counter );
 	aegisguard_test_assert( Mfa::verify_code( $secret, $code ), 'A current RFC 6238 code must verify.' );
@@ -122,17 +124,40 @@ try {
 	aegisguard_test_assert( is_array( $recovery_codes ) && 10 === count( $recovery_codes ), 'Enabling MFA must issue ten recovery codes.' );
 
 	$consume_totp = $reflection->getMethod( 'verify_and_consume_code' );
-	$consume_totp->setAccessible( true );
+	if ( PHP_VERSION_ID < 80100 ) {
+		$consume_totp->setAccessible( true );
+	}
 	aegisguard_test_assert( $consume_totp->invoke( null, $user_id, $secret, $code ), 'The first use of a TOTP counter must succeed.' );
 	aegisguard_test_assert( ! $consume_totp->invoke( null, $user_id, $secret, $code ), 'A TOTP counter must not be accepted twice.' );
 
 	$consume_recovery = $reflection->getMethod( 'consume_recovery_code' );
-	$consume_recovery->setAccessible( true );
+	if ( PHP_VERSION_ID < 80100 ) {
+		$consume_recovery->setAccessible( true );
+	}
 	aegisguard_test_assert( $consume_recovery->invoke( null, $user_id, $recovery_codes[0] ), 'A recovery code must work once.' );
 	aegisguard_test_assert( ! $consume_recovery->invoke( null, $user_id, $recovery_codes[0] ), 'A consumed recovery code must not work again.' );
+	if ( is_multisite() ) {
+		$other_sites = get_sites( array( 'fields' => 'ids', 'number' => 1, 'site__not_in' => array( get_current_blog_id() ) ) );
+		if ( $other_sites ) {
+			switch_to_blog( $other_sites[0] );
+			try {
+				aegisguard_test_same( $secret, Mfa::get_secret_for_user( $user_id ), 'The same account must decrypt its secret on another site.' );
+				aegisguard_test_assert( ! $consume_totp->invoke( null, $user_id, $secret, $code ), 'Sites must share the account replay counter.' );
+				Mfa::disable_for_user( $user_id );
+			} finally {
+				restore_current_blog();
+			}
+			aegisguard_test_same( false, get_option( Mfa::COUNTER_PREFIX . $user_id ), 'Disabling MFA on a different site must clear the original counter.' );
+		}
+	}
 } finally {
 	Mfa::disable_for_user( $user_id );
-	wp_delete_user( $user_id );
+	if ( is_multisite() ) {
+		require_once ABSPATH . 'wp-admin/includes/ms.php';
+		wpmu_delete_user( $user_id );
+	} else {
+		wp_delete_user( $user_id );
+	}
 }
 
 $upload_path = wp_tempnam( 'aegisguard-large-upload.txt' );
@@ -184,6 +209,12 @@ if ( function_exists( 'symlink' ) ) {
 $settings = Settings::all();
 $settings['audit_logging'] = true;
 update_option( Settings::OPTION, $settings, false );
+Logger::log( 'security.test_incident', 'Incident correlation regression.', 'critical' );
+Logger::log( 'security.test_incident', 'Incident correlation regression.', 'high' );
+$incident = $wpdb->get_row( $wpdb->prepare( 'SELECT severity, context FROM %i WHERE description = %s ORDER BY id DESC LIMIT 1', $wpdb->prefix . 'aegisguard_incidents', 'Incident correlation regression.' ) );
+aegisguard_test_same( 'critical', $incident->severity, 'A subsequent event must preserve peak incident severity.' );
+$latest = $wpdb->get_var( $wpdb->prepare( 'SELECT MAX(id) FROM %i WHERE event_type = %s', $wpdb->prefix . 'aegisguard_events', 'security.test_incident' ) );
+aegisguard_test_same( (int) $latest, json_decode( $incident->context, true )['latest_event_id'], 'The incident must reference its last event.' );
 Logger::log( 'test.integration_one', 'Integration chain event one.' );
 Logger::log( 'test.integration_two', 'Integration chain event two.' );
 $chain = Logger::verify_chain();
@@ -200,13 +231,19 @@ $settings['login_rate_limit'] = true;
 $settings['login_attempts'] = 3;
 update_option( Settings::OPTION, $settings, false );
 $_SERVER['REMOTE_ADDR'] = '192.0.2.55';
-$admin = get_user_by( 'login', 'audit_admin' );
+$admins = get_users( array( 'role' => 'administrator', 'number' => 1 ) );
+aegisguard_test_assert( ! empty( $admins ), 'The test site requires an administrator.' );
+$admin = reset( $admins );
 $login = $admin->user_email;
 $key_method = new ReflectionMethod( LoginProtection::class, 'key' );
-$key_method->setAccessible( true );
+if ( PHP_VERSION_ID < 80100 ) {
+	$key_method->setAccessible( true );
+}
 $identity_key = $key_method->invoke( null, $login );
 $ip_key_method = new ReflectionMethod( LoginProtection::class, 'ip_key' );
-$ip_key_method->setAccessible( true );
+if ( PHP_VERSION_ID < 80100 ) {
+	$ip_key_method->setAccessible( true );
+}
 $ip_key        = $ip_key_method->invoke( null );
 $wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE bucket IN (%s, %s)', $limits_table, $ip_key, $identity_key ) );
 LoginProtection::record_failure( $login );
@@ -217,7 +254,7 @@ $limited = LoginProtection::rate_limit_authentication( $admin, $login, '' );
 aegisguard_test_assert( is_wp_error( $limited ) && 'aegisguard_rate_limited' === $limited->get_error_code(), 'The configured number of failures must trigger the identity cap.' );
 LoginProtection::record_failure( $login, $limited );
 aegisguard_test_same( $expiry, $wpdb->get_var( $wpdb->prepare( 'SELECT expires_at FROM %i WHERE bucket = %s', $limits_table, $identity_key ) ), 'Further failures must not extend the original window.' );
-LoginProtection::record_success( 'audit_admin', $admin );
+LoginProtection::record_success( $admin->user_login, $admin );
 aegisguard_test_same( '3', (string) $wpdb->get_var( $wpdb->prepare( 'SELECT failures FROM %i WHERE bucket = %s', $limits_table, $ip_key ) ), 'A successful login must not clear the IP-wide abuse counter.' );
 aegisguard_test_same( $admin, LoginProtection::rate_limit_authentication( $admin, $login, '' ), 'A successful login must clear the email identity bucket.' );
 $wpdb->query( $wpdb->prepare( 'UPDATE %i SET expires_at = 0 WHERE bucket = %s', $limits_table, $ip_key ) );
@@ -235,7 +272,12 @@ $old_scan = get_option( 'aegisguard_last_scan_results', false );
 delete_option( 'aegisguard_last_scan_results' );
 $checksum_fixture = static function () { return new WP_Error( 'offline_fixture' ); };
 add_filter( 'pre_http_request', $checksum_fixture );
+$scan_fixture = trailingslashit( $uploads['basedir'] ) . 'ag-scan-fixture-' . wp_generate_uuid4();
+wp_mkdir_p( $scan_fixture );
 try {
+	for ( $i = 0; $i <= 500; ++$i ) {
+		aegisguard_test_assert( false !== file_put_contents( $scan_fixture . '/' . $i . '.css', '/* scan fixture */' ), 'The scan fixture must be writable.' );
+	}
 	$result = Scanner::run_full_scan();
 	aegisguard_test_assert( is_array( $result ) && ! empty( $result['pending']['files'] ), 'A large scan must persist its continuation cursor.' );
 	$previously_scanned = $result['stats']['files_scanned'];
@@ -246,6 +288,10 @@ try {
 	aegisguard_test_assert( empty( $result['pending'] ) && $result['stats']['files_scanned'] > $previously_scanned, 'A resumed scan must complete and include later files.' );
 	aegisguard_test_assert( $result['stats']['database_rows_scanned'] > 0, 'The database scan must count rows inspected.' );
 } finally {
+	foreach ( glob( $scan_fixture . '/*.css' ) as $fixture ) {
+		unlink( $fixture );
+	}
+	rmdir( $scan_fixture );
 	remove_filter( 'pre_http_request', $checksum_fixture );
 	if ( false === $old_scan ) {
 		delete_option( 'aegisguard_last_scan_results' );

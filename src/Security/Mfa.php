@@ -17,13 +17,14 @@ final class Mfa {
 		add_action( 'login_form', array( __CLASS__, 'login_field' ) );
 		add_filter( 'authenticate', array( __CLASS__, 'verify_login' ), 50, 3 );
 		add_action( 'delete_user', array( __CLASS__, 'cleanup_user' ) );
+		add_action( 'wpmu_delete_user', array( __CLASS__, 'cleanup_user' ) );
 	}
 
 	public static function login_field() {
 		?>
 		<p>
-			<label for="aegisguard_otp"><?php esc_html_e( 'Authentication code (if enabled)', 'aegisguard-security' ); ?><br>
-				<input type="text" name="aegisguard_otp" id="aegisguard_otp" class="input" inputmode="numeric" autocomplete="one-time-code" maxlength="12" value="">
+			<label for="aegisguard_otp"><?php esc_html_e( 'Authentication or recovery code (if enabled)', 'aegisguard-security' ); ?><br>
+				<input type="text" name="aegisguard_otp" id="aegisguard_otp" class="input" autocapitalize="characters" spellcheck="false" autocomplete="one-time-code" maxlength="12" value="">
 			</label>
 		</p>
 		<?php
@@ -40,7 +41,7 @@ final class Mfa {
 		}
 		$code   = isset( $_POST['aegisguard_otp'] ) ? sanitize_text_field( wp_unslash( $_POST['aegisguard_otp'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Login authentication occurs before a session nonce exists.
 		$code   = preg_replace( '/\s+/', '', $code );
-		$secret = self::decrypt( $encrypted );
+		$secret = self::read_user_secret( $user->ID, self::SECRET_META );
 		if ( ! $secret ) {
 			if ( self::consume_recovery_code( $user->ID, $code ) ) {
 				Logger::log( 'auth.mfa_recovery_used', 'MFA recovery code used after secret decryption failure.', 'high', array( 'user_id' => $user->ID ) );
@@ -63,18 +64,22 @@ final class Mfa {
 
 
 	public static function begin_setup( $user_id ) {
+		if ( self::is_enabled( $user_id ) ) {
+			return new \WP_Error( 'already_enabled', __( 'Disable the current authenticator before setting up another one.', 'aegisguard-security' ) );
+		}
 		$secret    = self::generate_secret();
 		$encrypted = self::encrypt( $secret );
 		if ( ! $encrypted ) {
 			return new \WP_Error( 'encryption_failed', __( 'Could not securely prepare the MFA secret.', 'aegisguard-security' ) );
 		}
-		update_user_meta( $user_id, self::PENDING_META, $encrypted );
+		if ( ! update_user_meta( $user_id, self::PENDING_META, $encrypted ) ) {
+			return new \WP_Error( 'setup_failed', __( 'Could not save the MFA setup key. Try again.', 'aegisguard-security' ) );
+		}
 		return $secret;
 	}
 
 	public static function pending_secret( $user_id ) {
-		$encrypted = get_user_meta( $user_id, self::PENDING_META, true );
-		return $encrypted ? self::decrypt( $encrypted ) : '';
+		return self::read_user_secret( $user_id, self::PENDING_META );
 	}
 
 	public static function clear_pending( $user_id ) {
@@ -109,7 +114,19 @@ final class Mfa {
 	private static function verify_and_consume_code( $user_id, $secret, $code, $time = null ) {
 
 		$counter = self::matching_counter( $secret, $code, $time );
-		return false !== $counter && self::consume_counter( $user_id, $counter );
+		if ( false === $counter ) {
+			return false;
+		}
+		$encoded = get_user_meta( $user_id, self::SECRET_META, true );
+		if ( is_multisite() && preg_match( '/^site:(\d+):/', $encoded, $match ) && get_current_blog_id() !== (int) $match[1] ) {
+			switch_to_blog( (int) $match[1] );
+			try {
+				return self::consume_counter( $user_id, $counter );
+			} finally {
+				restore_current_blog();
+			}
+		}
+		return self::consume_counter( $user_id, $counter );
 	}
 	public static function enable_for_user( $user_id, $secret ) {
 
@@ -122,8 +139,13 @@ final class Mfa {
 		foreach ( $codes as $code ) {
 			$hashes[] = wp_hash_password( $code );
 		}
-		update_user_meta( $user_id, self::SECRET_META, $encrypted );
-		update_user_meta( $user_id, self::RECOVERY_META, $hashes );
+		if ( ! add_user_meta( $user_id, self::SECRET_META, $encrypted, true ) ) {
+			return new \WP_Error( 'enable_failed', __( 'MFA could not be enabled. Refresh the page and check the current status.', 'aegisguard-security' ) );
+		}
+		if ( ! update_user_meta( $user_id, self::RECOVERY_META, $hashes ) ) {
+			delete_user_meta( $user_id, self::SECRET_META, $encrypted );
+			return new \WP_Error( 'recovery_failed', __( 'Could not save recovery codes. Retry MFA setup.', 'aegisguard-security' ) );
+		}
 		delete_option( self::counter_option( $user_id ) );
 		self::clear_pending( $user_id );
 		Logger::log( 'security.mfa_enabled', 'MFA enabled for user.', 'medium', array( 'user_id' => $user_id ) );
@@ -131,17 +153,15 @@ final class Mfa {
 	}
 
 	public static function disable_for_user( $user_id ) {
+		self::cleanup_user( $user_id );
 		delete_user_meta( $user_id, self::SECRET_META );
 		delete_user_meta( $user_id, self::RECOVERY_META );
-		delete_option( self::counter_option( $user_id ) );
-		delete_option( self::recovery_lock_option( $user_id ) );
 		self::clear_pending( $user_id );
 		Logger::log( 'security.mfa_disabled', 'MFA disabled for user.', 'high', array( 'user_id' => $user_id ) );
 	}
 
 	public static function get_secret_for_user( $user_id ) {
-		$encrypted = get_user_meta( $user_id, self::SECRET_META, true );
-		return $encrypted ? self::decrypt( $encrypted ) : '';
+		return self::read_user_secret( $user_id, self::SECRET_META );
 	}
 
 	public static function is_enabled( $user_id ) {
@@ -150,7 +170,11 @@ final class Mfa {
 	}
 
 	public static function cleanup_user( $user_id ) {
-
+		$encoded = get_user_meta( $user_id, self::SECRET_META, true );
+		if ( is_multisite() && is_string( $encoded ) && preg_match( '/^site:(\d+):/', $encoded, $match ) && get_current_blog_id() !== (int) $match[1] ) {
+			delete_blog_option( (int) $match[1], self::counter_option( $user_id ) );
+			delete_blog_option( (int) $match[1], self::recovery_lock_option( $user_id ) );
+		}
 		delete_option( self::counter_option( $user_id ) );
 		delete_option( self::recovery_lock_option( $user_id ) );
 	}
@@ -179,35 +203,34 @@ final class Mfa {
 		if ( ! preg_match( '/^[A-Z0-9]{10}$/i', (string) $code ) ) {
 			return false;
 		}
-		$lock_option = self::recovery_lock_option( $user_id );
-		if ( ! self::acquire_recovery_lock( $lock_option ) ) {
+		$hashes = get_user_meta( $user_id, self::RECOVERY_META, true );
+		if ( ! is_array( $hashes ) ) {
 			return false;
 		}
-		try {
-			$hashes = get_user_meta( $user_id, self::RECOVERY_META, true );
-			if ( ! is_array( $hashes ) ) {
-				return false;
+		foreach ( $hashes as $index => $hash ) {
+			if ( wp_check_password( strtoupper( $code ), $hash ) ) {
+				$remaining = $hashes;
+				unset( $remaining[ $index ] );
+				// Only the request that replaces this exact list can consume the code.
+				return (bool) update_user_meta( $user_id, self::RECOVERY_META, array_values( $remaining ), $hashes );
 			}
-			foreach ( $hashes as $index => $hash ) {
-				if ( wp_check_password( strtoupper( $code ), $hash ) ) {
-					unset( $hashes[ $index ] );
-					update_user_meta( $user_id, self::RECOVERY_META, array_values( $hashes ) );
-					return true;
-				}
-			}
-			return false;
-		} finally {
-			delete_option( $lock_option );
 		}
+		return false;
 	}
 
 	private static function consume_counter( $user_id, $counter ) {
 
 		$option_name = self::counter_option( $user_id );
-		if ( add_option( $option_name, (string) (int) $counter, '', false ) ) {
+		global $wpdb;
+		// The options table's unique name index must elect exactly one initial consumer.
+		$inserted = $wpdb->query( $wpdb->prepare( 'INSERT IGNORE INTO %i (option_name, option_value, autoload) VALUES (%s, %s, %s)', $wpdb->options, $option_name, (string) (int) $counter, 'no' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic replay guard.
+		if ( 1 === $inserted ) {
+			wp_cache_delete( 'notoptions', 'options' );
 			return true;
 		}
-		global $wpdb;
+		if ( false === $inserted ) {
+			return false;
+		}
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Conditional update is required for atomic single-use TOTP counter consumption.
 		$updated = $wpdb->query(
 			$wpdb->prepare(
@@ -219,20 +242,6 @@ final class Mfa {
 		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- The options table name is supplied by WordPress; all values are prepared.
 			wp_cache_delete( $option_name, 'options' );
 		return 1 === $updated;
-	}
-
-	private static function acquire_recovery_lock( $option_name ) {
-
-		$now = time();
-		if ( add_option( $option_name, (string) $now, '', false ) ) {
-			return true;
-		}
-		$created = (int) get_option( $option_name, 0 );
-		if ( $created > 0 && $created < $now - 30 ) {
-			delete_option( $option_name );
-			return add_option( $option_name, (string) $now, '', false );
-		}
-		return false;
 	}
 
 	private static function counter_option( $user_id ) {
@@ -327,6 +336,11 @@ final class Mfa {
 	}
 
 	private static function encrypt( $plaintext ) {
+		$encoded = self::encrypt_with_site_key( $plaintext );
+		return $encoded && is_multisite() ? 'site:' . get_current_blog_id() . ':' . $encoded : $encoded;
+	}
+
+	private static function encrypt_with_site_key( $plaintext ) {
 		$key = self::encryption_key();
 		if ( ! $key ) {
 			return false;
@@ -349,9 +363,39 @@ final class Mfa {
 		return false;
 	}
 
-	private static function decrypt( $encoded ) {
-		$key = self::encryption_key();
-		if ( ! $key ) {
+	// User metadata is shared across sites, while each encryption key belongs to one site.
+	private static function read_user_secret( $user_id, $meta_key ) {
+		$encoded = get_user_meta( $user_id, $meta_key, true );
+		if ( ! is_string( $encoded ) || '' === $encoded ) {
+			return '';
+		}
+		if ( ! is_multisite() ) {
+			return self::decrypt( $encoded );
+		}
+		$tagged  = preg_match( '/^site:(\d+):(.+)$/', $encoded, $parts );
+		$sites   = $tagged ? array( (int) $parts[1] ) : array_unique( array_merge( array( get_current_blog_id() ), array_keys( get_blogs_of_user( $user_id, true ) ) ) );
+		$payload = $tagged ? $parts[2] : $encoded;
+		// Older records have no site ID. Try the current site's key first.
+		foreach ( $sites as $site_id ) {
+				$key = get_blog_option( $site_id, 'aegisguard_mfa_key', '' );
+			if ( ! $key ) {
+				continue;
+			}
+				// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Stored binary encryption key.
+				$secret = self::decrypt( $payload, base64_decode( $key, true ) );
+			if ( false !== $secret ) {
+				if ( ! $tagged ) {
+					update_user_meta( $user_id, $meta_key, 'site:' . $site_id . ':' . $payload, $encoded );
+				}
+				return $secret;
+			}
+		}
+		return false;
+	}
+
+	private static function decrypt( $encoded, $key = null ) {
+		$key = null === $key ? self::encryption_key() : $key;
+		if ( ! is_string( $key ) || 32 !== strlen( $key ) ) {
 			return false;
 		}
 		if ( 0 === strpos( $encoded, 'sodium:' ) && function_exists( 'sodium_crypto_secretbox_open' ) ) {

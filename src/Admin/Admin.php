@@ -94,13 +94,22 @@ final class Admin {
 
 				<section class="ag-card">
 					<h2><?php esc_html_e( 'Priority actions', 'aegisguard-security' ); ?></h2>
-					<?php if ( empty( $scan ) ) : ?>
+					<?php if ( ! empty( $scan['pending'] ) ) : ?>
+						<p><?php esc_html_e( 'A scan is in progress. Findings may change when the remaining checks finish.', 'aegisguard-security' ); ?></p>
+						<?php if ( current_user_can( Capabilities::SCAN ) ) : ?>
+							<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=aegisguard-scanner' ) ); ?>"><?php esc_html_e( 'Continue security scan', 'aegisguard-security' ); ?></a>
+						<?php endif; ?>
+					<?php elseif ( empty( $scan ) ) : ?>
 						<p><?php esc_html_e( 'No complete security scan has been run yet. Establish a baseline before making aggressive changes.', 'aegisguard-security' ); ?></p>
-						<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=aegisguard-scanner' ) ); ?>"><?php esc_html_e( 'Run first scan', 'aegisguard-security' ); ?></a>
+						<?php if ( current_user_can( Capabilities::SCAN ) ) : ?>
+							<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=aegisguard-scanner' ) ); ?>"><?php esc_html_e( 'Run first scan', 'aegisguard-security' ); ?></a>
+						<?php endif; ?>
 					<?php elseif ( (int) $summary['critical'] > 0 ) : ?>
 						<?php /* translators: %d: number of critical security findings. */ ?>
 						<p class="ag-danger-text"><?php echo esc_html( sprintf( _n( '%d critical issue requires review.', '%d critical issues require review.', (int) $summary['critical'], 'aegisguard-security' ), (int) $summary['critical'] ) ); ?></p>
-						<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=aegisguard-scanner' ) ); ?>"><?php esc_html_e( 'Review findings', 'aegisguard-security' ); ?></a>
+						<?php if ( current_user_can( Capabilities::SCAN ) ) : ?>
+							<a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=aegisguard-scanner' ) ); ?>"><?php esc_html_e( 'Review findings', 'aegisguard-security' ); ?></a>
+						<?php endif; ?>
 					<?php else : ?>
 						<p><?php esc_html_e( 'No critical findings are present in the last scan. Review high and medium findings and keep WordPress, plugins, and themes current.', 'aegisguard-security' ); ?></p>
 						<a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=aegisguard-events' ) ); ?>"><?php esc_html_e( 'Review security events', 'aegisguard-security' ); ?></a>
@@ -649,23 +658,30 @@ endif;
 		self::require_cap( Capabilities::INCIDENT );
 		$incident_id = isset( $_POST['incident_id'] ) ? absint( $_POST['incident_id'] ) : 0;
 		check_admin_referer( 'aegisguard_resolve_incident_' . $incident_id );
+		$notice = 'incident_not_resolved';
 		if ( $incident_id ) {
 			global $wpdb;
 			$table = $wpdb->prefix . 'aegisguard_incidents';
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Explicit authorized update to the plugin's incident table.
-			$wpdb->update(
+			$updated = $wpdb->update(
 				$table,
 				array(
 					'status'     => 'resolved',
 					'updated_at' => current_time( 'mysql', true ),
 				),
-				array( 'id' => $incident_id ),
+				array(
+					'id'     => $incident_id,
+					'status' => 'open',
+				),
 				array( '%s', '%s' ),
-				array( '%d' )
+				array( '%d', '%s' )
 			);
-			Logger::log( 'incident.resolved', 'Security incident marked as resolved.', 'medium', array( 'incident_id' => $incident_id ) );
+			if ( 1 === $updated ) {
+				$notice = 'incident_resolved';
+				Logger::log( 'incident.resolved', 'Security incident marked as resolved.', 'medium', array( 'incident_id' => $incident_id ) );
+			}
 		}
-		wp_safe_redirect( admin_url( 'admin.php?page=aegisguard-incidents' ) );
+		wp_safe_redirect( add_query_arg( 'ag_notice', $notice, admin_url( 'admin.php?page=aegisguard-incidents' ) ) );
 		exit;
 	}
 
@@ -690,6 +706,8 @@ endif;
 		}
 		$key      = sanitize_key( wp_unslash( $_GET['ag_notice'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Display-only notice.
 		$messages = array(
+			'incident_not_resolved'      => array( 'warning', __( 'The incident could not be marked resolved. Refresh the list to check its status.', 'aegisguard-security' ) ),
+			'incident_resolved'          => array( 'success', __( 'Incident marked resolved.', 'aegisguard-security' ) ),
 			'settings_saved'             => array( 'success', __( 'Security settings saved.', 'aegisguard-security' ) ),
 			'scan_complete'              => array( 'success', __( 'Security scan completed.', 'aegisguard-security' ) ),
 			'scan_pending'               => array( 'info', __( 'Scan progress saved. Continue to check the remaining entries.', 'aegisguard-security' ) ),
